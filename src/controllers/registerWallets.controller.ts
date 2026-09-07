@@ -7,7 +7,7 @@
 
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { registerWallets } from '../../services/wallet/registerWallets.service';
+import { registerWallets } from '../services/wallet/registerWallets.service.js';
 
 const addressSchema = z.object({
   chain: z.enum(['ethereum', 'bsc', 'base', 'polygon', 'tron', 'solana', 'ton']),

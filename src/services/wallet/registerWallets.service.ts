@@ -7,8 +7,17 @@
  * by construction.
  */
 
-import { prisma } from '../../config/database';
-import type { ChainId } from '../../types/chain';
+import { prisma } from '../../config/database.js';
+import type { Chain } from '@prisma/client';
+
+type ChainId =
+  | 'ethereum'
+  | 'bsc'
+  | 'base'
+  | 'polygon'
+  | 'tron'
+  | 'solana'
+  | 'ton';
 
 export interface RegisterWalletsInput {
   userId: string;
@@ -54,10 +63,13 @@ export async function registerWallets(
     addresses.map(({ chain, address }) =>
       prisma.wallet.upsert({
         where: {
-          userId_chain: { userId, chain }, // requires @@unique([userId, chain]) on Wallet model
+          userId_chain: {
+            userId,
+            chain: chain as Chain,
+          }, // requires @@unique([userId, chain]) on Wallet model
         },
         update: { address },
-        create: { userId, chain, address },
+        create: { userId, chain: chain as Chain, address },
       })
     )
   );

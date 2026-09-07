@@ -1,5 +1,7 @@
+// bcryptjs does not currently ship TypeScript declarations.
+// @ts-expect-error — the package exposes the required runtime API.
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
+import jwt, { type SignOptions } from "jsonwebtoken";
 import crypto from "node:crypto";
 import { prisma } from "../../config/database.js";
 import { env } from "../../config/env.js";
@@ -7,7 +9,9 @@ import { env } from "../../config/env.js";
 const SALT_ROUNDS = 12;
 
 function signSession(userId: string) {
-  return jwt.sign({ sub: userId }, env.JWT_SECRET, { expiresIn: env.JWT_EXPIRES_IN });
+  return jwt.sign({ sub: userId }, env.JWT_SECRET, {
+    expiresIn: env.JWT_EXPIRES_IN as SignOptions["expiresIn"],
+  });
 }
 
 function sessionExpiry(): Date {

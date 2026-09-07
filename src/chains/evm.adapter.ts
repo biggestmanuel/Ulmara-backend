@@ -1,4 +1,12 @@
-import type { ChainAdapter } from "../chain.types.js";
+type ChainAdapter = {
+  chain: string;
+  isValidAddress(address: string): boolean;
+  getBalance(address: string, asset?: string): Promise<string>;
+  buildTransaction(input: unknown): Promise<unknown>;
+  sendTransaction(signedTx: unknown): Promise<unknown>;
+  getTransactionStatus(txHash: string): Promise<unknown>;
+  estimateFee(input: unknown): Promise<unknown>;
+};
 
 // Shared EVM logic. Each concrete chain (ethereum/bsc/base/polygon) configures
 // this with its own RPC URL and chain ID once ethers/viem is wired in.
