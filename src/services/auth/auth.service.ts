@@ -25,7 +25,7 @@ function sanitizeUser<T extends { passwordHash: string; pinHash: string | null }
 }
 
 export const authService = {
-  async signup(input: { email: string; phone?: string; password: string }) {
+  async signup(input: { email: string; phone?: string; password: string }, meta?: { userAgent?: string; ipAddress?: string }) {
     const existing = await prisma.user.findUnique({ where: { email: input.email } });
     if (existing) throw Object.assign(new Error("Email already in use"), { statusCode: 409 });
 
@@ -35,13 +35,21 @@ export const authService = {
     });
 
     const token = signSession(user.id);
-    await prisma.session.create({ data: { userId: user.id, token, expiresAt: sessionExpiry() } });
+    await prisma.session.create({
+      data: {
+        userId: user.id,
+        token,
+        expiresAt: sessionExpiry(),
+        userAgent: meta?.userAgent,
+        ipAddress: meta?.ipAddress,
+      },
+    });
 
     // TODO: real email/SMS delivery — no provider wired yet
     return { user: sanitizeUser(user), token };
   },
 
-  async login(input: { email: string; password: string }) {
+  async login(input: { email: string; password: string }, meta?: { userAgent?: string; ipAddress?: string }) {
     const user = await prisma.user.findUnique({ where: { email: input.email } });
     if (!user) throw Object.assign(new Error("Invalid email or password"), { statusCode: 401 });
 
@@ -49,7 +57,15 @@ export const authService = {
     if (!valid) throw Object.assign(new Error("Invalid email or password"), { statusCode: 401 });
 
     const token = signSession(user.id);
-    await prisma.session.create({ data: { userId: user.id, token, expiresAt: sessionExpiry() } });
+    await prisma.session.create({
+      data: {
+        userId: user.id,
+        token,
+        expiresAt: sessionExpiry(),
+        userAgent: meta?.userAgent,
+        ipAddress: meta?.ipAddress,
+      },
+    });
     return { user: sanitizeUser(user), token };
   },
 
@@ -100,5 +116,48 @@ export const authService = {
       throw Object.assign(new Error("Incorrect PIN"), { statusCode: 401 });
     }
     return { valid: true };
+  },
+
+  async changePin(userId: string, currentPin: string, newPin: string) {
+    if (!/^\d{6}$/.test(newPin)) {
+      throw Object.assign(new Error("PIN must be 6 digits"), { statusCode: 400 });
+    }
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user?.pinHash) {
+      throw Object.assign(new Error("No PIN set for this account"), { statusCode: 409 });
+    }
+    const valid = await bcrypt.compare(currentPin, user.pinHash);
+    if (!valid) {
+      throw Object.assign(new Error("Current PIN is incorrect"), { statusCode: 401 });
+    }
+    const pinHash = await bcrypt.hash(newPin, SALT_ROUNDS);
+    await prisma.user.update({ where: { id: userId }, data: { pinHash } });
+    return { success: true };
+  },
+
+  async listSessions(userId: string, currentToken: string) {
+    const sessions = await prisma.session.findMany({
+      where: { userId, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: "desc" },
+    });
+    return sessions.map((s) => ({
+      id: s.id,
+      userAgent: s.userAgent,
+      ipAddress: s.ipAddress,
+      createdAt: s.createdAt,
+      current: s.token === currentToken,
+    }));
+  },
+
+  async revokeSession(userId: string, sessionId: string, currentToken: string) {
+    const session = await prisma.session.findUnique({ where: { id: sessionId } });
+    if (!session || session.userId !== userId) {
+      throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+    }
+    if (session.token === currentToken) {
+      throw Object.assign(new Error("Cannot revoke your current session — log out instead"), { statusCode: 400 });
+    }
+    await prisma.session.delete({ where: { id: sessionId } });
+    return { success: true };
   },
 };

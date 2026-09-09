@@ -12,7 +12,8 @@ export const authController = {
   async signup(request: FastifyRequest, reply: FastifyReply) {
     try {
       const body = request.body as { email: string; phone?: string; password: string };
-      const result = await authService.signup(body);
+      const meta = { userAgent: request.headers["user-agent"], ipAddress: request.ip };
+      const result = await authService.signup(body, meta);
       return reply.code(201).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);
@@ -22,7 +23,8 @@ export const authController = {
   async login(request: FastifyRequest, reply: FastifyReply) {
     try {
       const body = request.body as { email: string; password: string };
-      const result = await authService.login(body);
+      const meta = { userAgent: request.headers["user-agent"], ipAddress: request.ip };
+      const result = await authService.login(body, meta);
       return reply.code(200).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);
@@ -73,6 +75,39 @@ export const authController = {
     try {
       const body = request.body as { pin: string };
       const result = await authService.verifyPin(request.userId!, body.pin);
+      return reply.code(200).send(successResponse(result));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
+  async changePin(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const body = request.body as { currentPin: string; newPin: string };
+      const result = await authService.changePin(request.userId!, body.currentPin, body.newPin);
+      return reply.code(200).send(successResponse(result));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
+  async listSessions(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const authHeader = request.headers.authorization!;
+      const currentToken = authHeader.slice(7);
+      const result = await authService.listSessions(request.userId!, currentToken);
+      return reply.code(200).send(successResponse(result));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
+  async revokeSession(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const authHeader = request.headers.authorization!;
+      const currentToken = authHeader.slice(7);
+      const { id } = request.params as { id: string };
+      const result = await authService.revokeSession(request.userId!, id, currentToken);
       return reply.code(200).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);

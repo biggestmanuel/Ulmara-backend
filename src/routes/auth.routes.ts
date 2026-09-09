@@ -10,4 +10,7 @@ export async function authRoutes(app: FastifyInstance) {
   app.post("/forgot-password", authController.forgotPassword);
   app.post("/set-pin", { preHandler: requireAuth }, authController.setPin);
   app.post("/verify-pin", { preHandler: requireAuth }, authController.verifyPin);
+  app.post("/change-pin", { preHandler: requireAuth }, authController.changePin);
+  app.get("/sessions", { preHandler: requireAuth }, authController.listSessions);
+  app.delete("/sessions/:id", { preHandler: requireAuth }, authController.revokeSession);
 }
