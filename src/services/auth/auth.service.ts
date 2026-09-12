@@ -2,7 +2,6 @@
 // @ts-expect-error — the package exposes the required runtime API.
 import bcrypt from "bcryptjs";
 import jwt, { type SignOptions } from "jsonwebtoken";
-import crypto from "node:crypto";
 import { prisma } from "../../config/database.js";
 import { env } from "../../config/env.js";
 
@@ -71,22 +70,19 @@ export const authService = {
 
   async verifyEmail(input: { userId: string; code: string }) {
     // TODO: check against a real stored OTP once email delivery exists — any 6-digit code passes for now
-    if (!/^\d{6}$/.test(input.code)) throw Object.assign(new Error("Invalid code"), { statusCode: 400 });
-    const user = await prisma.user.update({ where: { id: input.userId }, data: { emailVerified: true } });
-    return sanitizeUser(user);
+      void input;
+      throw Object.assign(new Error("Email verification provider is not configured"), { statusCode: 501 });
   },
 
   async verifyPhone(input: { userId: string; code: string }) {
-    if (!/^\d{6}$/.test(input.code)) throw Object.assign(new Error("Invalid code"), { statusCode: 400 });
-    const user = await prisma.user.update({ where: { id: input.userId }, data: { phoneVerified: true } });
-    return sanitizeUser(user);
+    void input;
+    throw Object.assign(new Error("SMS verification provider is not configured"), { statusCode: 501 });
   },
 
   async requestPasswordReset(input: { email: string }) {
     const user = await prisma.user.findUnique({ where: { email: input.email } });
     if (!user) return { success: true }; // don't leak which emails exist
-    const resetToken = crypto.randomBytes(32).toString("hex"); // TODO: persist + email this
-    return { success: true, resetToken };
+    return { success: true };
   },
 
   async resetPassword() {

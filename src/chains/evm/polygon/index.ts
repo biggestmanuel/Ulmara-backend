@@ -1,4 +1,4 @@
 import { createEvmAdapter } from "../../evm.adapter.js";
+import { env } from "../../../config/env.js";
 
-// TODO: add POLYGON_RPC_URL to env schema
-export const polygonAdapter = createEvmAdapter("POLYGON", process.env.POLYGON_RPC_URL ?? "");
+export const polygonAdapter = createEvmAdapter("POLYGON", env.POLYGON_RPC_URL ?? "");

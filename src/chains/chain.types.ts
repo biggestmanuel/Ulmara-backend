@@ -24,4 +24,6 @@ export interface ChainAdapter {
     asset: string;
     amount: string;
   }): Promise<string>;
+
+  sendSignedTransaction?(signedTx: string): Promise<{ txHash: string }>;
 }

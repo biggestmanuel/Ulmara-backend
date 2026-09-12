@@ -1,15 +1,16 @@
 import { prisma } from "../../config/database.js";
 
 export const paymentService = {
-  async createRequest(userId: string, input: { asset: string; amount?: string; expiresAt?: string }) {
-    return prisma.paymentRequest.create({
+  async createRequest(userId: string, input: { asset?: string; symbol?: string; amount?: string; expiresAt?: string }) {
+    const request = await prisma.paymentRequest.create({
       data: {
         userId,
-        asset: input.asset,
+        asset: input.asset ?? input.symbol ?? "ETH",
         amount: input.amount,
         expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
       },
     });
+    return { requestId: request.id, link: `https://ulmara.app/pay/${request.id}` };
   },
 
   async getRequest(id: string) {

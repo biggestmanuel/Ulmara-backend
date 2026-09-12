@@ -1,6 +1,9 @@
+import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { env } from "../../config/env.js";
 import type { ChainAdapter } from "../chain.types.js";
 
-// TODO: implement using @solana/web3.js
+const connection = new Connection(env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com", "confirmed");
+
 export const solanaAdapter: ChainAdapter = {
   chain: "SOL",
 
@@ -10,22 +13,44 @@ export const solanaAdapter: ChainAdapter = {
   },
 
   async getBalance(address, asset) {
-    throw new Error("Not implemented");
+    if (asset) throw new Error("SPL token balance reads are not implemented yet");
+    return String((await connection.getBalance(new PublicKey(address))) / LAMPORTS_PER_SOL);
   },
 
   async buildTransaction(input) {
-    throw new Error("Not implemented");
+    if (input.asset !== "SOL") throw new Error("Solana adapter supports native SOL only");
+    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+    return new Transaction({
+      recentBlockhash: blockhash,
+      feePayer: new PublicKey(input.fromAddress),
+    }).add(SystemProgram.transfer({
+      fromPubkey: new PublicKey(input.fromAddress),
+      toPubkey: new PublicKey(input.toAddress),
+      lamports: Math.round(Number(input.amount) * LAMPORTS_PER_SOL),
+    }));
   },
 
   async sendTransaction(signedTx) {
-    throw new Error("Not implemented");
+    if (typeof signedTx !== "string") throw new Error("Signed Solana transaction must be base64");
+    return this.sendSignedTransaction!(signedTx);
   },
 
   async getTransactionStatus(txHash) {
-    throw new Error("Not implemented");
+    const result = await connection.getSignatureStatuses([txHash]);
+    const status = result.value[0];
+    if (!status) return "pending";
+    return status.err ? "failed" : status.confirmationStatus === "finalized" ? "confirmed" : "pending";
   },
 
   async estimateFee(input) {
-    throw new Error("Not implemented");
+    const transaction = await this.buildTransaction(input) as Transaction;
+    const message = transaction.compileMessage();
+    const fee = await connection.getFeeForMessage(message);
+    return String((fee.value ?? 0) / LAMPORTS_PER_SOL);
+  },
+
+  async sendSignedTransaction(signedTx: string) {
+    const signature = await connection.sendRawTransaction(Buffer.from(signedTx, "base64"), { preflightCommitment: "confirmed" });
+    return { txHash: signature };
   },
 };

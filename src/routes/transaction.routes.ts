@@ -7,4 +7,5 @@ export async function transactionRoutes(app: FastifyInstance) {
   app.get("/", { preHandler: requireAuth }, transactionController.list);
   app.get("/:id", { preHandler: requireAuth }, transactionController.getById);
   app.get("/:id/status", { preHandler: requireAuth }, transactionController.getStatus);
+  app.post("/:id/broadcast", { preHandler: requireAuth }, transactionController.broadcast);
 }

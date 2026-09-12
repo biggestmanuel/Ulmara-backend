@@ -1,4 +1,4 @@
 import { createEvmAdapter } from "../../evm.adapter.js";
+import { env } from "../../../config/env.js";
 
-// TODO: add BSC_RPC_URL to env schema
-export const bscAdapter = createEvmAdapter("BSC", process.env.BSC_RPC_URL ?? "");
+export const bscAdapter = createEvmAdapter("BSC", env.BSC_RPC_URL ?? "");

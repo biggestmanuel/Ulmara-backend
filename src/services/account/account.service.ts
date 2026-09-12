@@ -38,7 +38,7 @@ export const accountService = {
   async getByAccountId(accountId: string) {
     const record = await prisma.accountId.findUnique({
       where: { accountId },
-      include: { user: { select: { id: true, name: true, photoUrl: true } } },
+      include: { user: { select: { id: true, name: true, photoUrl: true, wallets: { select: { chain: true, address: true } } } } },
     });
     if (!record) throw Object.assign(new Error("Account ID not found"), { statusCode: 404 });
     return { accountId: record.accountId, profile: record.user };

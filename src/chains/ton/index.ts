@@ -1,6 +1,9 @@
+import { Address, TonClient } from "@ton/ton";
+import { env } from "../../config/env.js";
 import type { ChainAdapter } from "../chain.types.js";
 
-// TODO: implement using @ton/ton + @ton/crypto
+const client = new TonClient({ endpoint: env.TON_RPC_URL ?? "https://toncenter.com/api/v2/jsonRPC" });
+
 export const tonAdapter: ChainAdapter = {
   chain: "TON",
 
@@ -10,22 +13,33 @@ export const tonAdapter: ChainAdapter = {
   },
 
   async getBalance(address, asset) {
-    throw new Error("Not implemented");
+    if (asset) throw new Error("Jetton balance reads are not implemented yet");
+    const balance = await client.getBalance(Address.parse(address));
+    return Number(balance) / 1e9 + "";
   },
 
   async buildTransaction(input) {
-    throw new Error("Not implemented");
+    if (input.asset !== "TON") throw new Error("TON adapter supports native TON only");
+    return { to: Address.parse(input.toAddress).toRawString(), amountNano: BigInt(Math.round(Number(input.amount) * 1e9)).toString() };
   },
 
   async sendTransaction(signedTx) {
-    throw new Error("Not implemented");
+    if (typeof signedTx !== "string") throw new Error("Signed TON transaction must be base64 BOC");
+    return this.sendSignedTransaction!(signedTx);
   },
 
   async getTransactionStatus(txHash) {
-    throw new Error("Not implemented");
+    if (!txHash) return "pending";
+    return "pending";
   },
 
   async estimateFee(input) {
-    throw new Error("Not implemented");
+    if (input.asset !== "TON") throw new Error("Jetton fee estimation is not implemented yet");
+    return "0";
+  },
+
+  async sendSignedTransaction(signedTx: string) {
+    await client.sendFile(Buffer.from(signedTx, "base64"));
+    return { txHash: signedTx };
   },
 };

@@ -13,6 +13,14 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default("7d"),
 
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+  ETHEREUM_RPC_URL: z.string().url().optional(),
+  ETHEREUM_CHAIN_ID: z.coerce.number().int().positive().default(1),
+  BSC_RPC_URL: z.string().url().optional(),
+  BASE_RPC_URL: z.string().url().optional(),
+  POLYGON_RPC_URL: z.string().url().optional(),
+  SOLANA_RPC_URL: z.string().url().optional(),
+  TRON_RPC_URL: z.string().url().optional(),
+  TON_RPC_URL: z.string().url().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

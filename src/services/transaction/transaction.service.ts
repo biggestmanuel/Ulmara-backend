@@ -4,6 +4,15 @@ import { transactionQueue } from "../../queues/transaction.queue.js";
 import type { SendTransactionInput } from "../../types/transaction.js";
 
 export const transactionService = {
+  async broadcast(userId: string, transactionId: string, signedTx: string) {
+    const transaction = await this.getById(userId, transactionId);
+    if (transaction.status !== "PENDING") {
+      throw Object.assign(new Error("Transaction is no longer awaiting broadcast"), { statusCode: 409 });
+    }
+    await transactionQueue.add("process-transaction", { transactionId: transaction.id, signedTx });
+    return transaction;
+  },
+
   async send(input: SendTransactionInput) {
     const recipient = await prisma.accountId.findUnique({
       where: { accountId: input.recipientAccountId },
@@ -41,29 +50,65 @@ export const transactionService = {
       },
     });
 
-    // Actual signing/broadcast happens in the worker once chain adapters support it
-    await transactionQueue.add("process-transaction", { transactionId: transaction.id });
-
     return transaction;
   },
 
   async list(userId: string, page = 1, limit = 20) {
+    const account = await prisma.accountId.findUnique({ where: { userId } });
+    const where = {
+      OR: [
+        { senderId: userId },
+        ...(account ? [{ recipientAccountId: account.accountId }] : []),
+      ],
+    };
     const [items, total] = await Promise.all([
       prisma.transaction.findMany({
-        where: { senderId: userId },
+        where,
+        include: { sender: { select: { accountId: { select: { accountId: true } } } } },
         orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      prisma.transaction.count({ where: { senderId: userId } }),
+      prisma.transaction.count({ where }),
     ]);
-    return { items, page, limit, total };
+    return {
+      items: items.map((item) => {
+        const sent = item.senderId === userId;
+        return {
+          ...item,
+          direction: sent ? "sent" : "received",
+          counterpartyAccountId: sent
+            ? item.recipientAccountId
+            : item.sender.accountId?.accountId ?? "Unknown",
+        };
+      }),
+      page,
+      limit,
+      total,
+    };
   },
 
   async getById(userId: string, id: string) {
-    const transaction = await prisma.transaction.findFirst({ where: { id, senderId: userId } });
+    const account = await prisma.accountId.findUnique({ where: { userId } });
+    const transaction = await prisma.transaction.findFirst({
+      where: {
+        id,
+        OR: [
+          { senderId: userId },
+          ...(account ? [{ recipientAccountId: account.accountId }] : []),
+        ],
+      },
+      include: { sender: { select: { accountId: { select: { accountId: true } } } } },
+    });
     if (!transaction) throw Object.assign(new Error("Transaction not found"), { statusCode: 404 });
-    return transaction;
+    const sent = transaction.senderId === userId;
+    return {
+      ...transaction,
+      direction: sent ? "sent" : "received",
+      counterpartyAccountId: sent
+        ? transaction.recipientAccountId
+        : transaction.sender.accountId?.accountId ?? "Unknown",
+    };
   },
 
   async getStatus(userId: string, id: string) {

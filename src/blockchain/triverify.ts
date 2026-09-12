@@ -2,7 +2,7 @@
 // Address-existence verification layer, used on top of each chain adapter's
 // format-only isValidAddress() check during the Send flow's Safety Confirmation step.
 
-import type { ChainName } from "../chains/index.js";
+import { getChainAdapter, type ChainName } from "../chains/index.js";
 
 export interface AddressVerificationResult {
   address: string;
@@ -15,5 +15,11 @@ export async function verifyAddressExists(
   address: string,
   chain: ChainName
 ): Promise<AddressVerificationResult> {
-  throw new Error("Not implemented — pending TriVerify SDK integration");
+  const adapter = await getChainAdapter(chain);
+  return {
+    address,
+    chain,
+    formatValid: adapter.isValidAddress(address),
+    existsOnChain: null,
+  };
 }

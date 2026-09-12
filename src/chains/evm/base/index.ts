@@ -1,4 +1,4 @@
 import { createEvmAdapter } from "../../evm.adapter.js";
+import { env } from "../../../config/env.js";
 
-// TODO: add BASE_RPC_URL to env schema
-export const baseAdapter = createEvmAdapter("BASE", process.env.BASE_RPC_URL ?? "");
+export const baseAdapter = createEvmAdapter("BASE", env.BASE_RPC_URL ?? "");
