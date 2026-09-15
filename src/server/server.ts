@@ -2,6 +2,8 @@ import { buildApp } from "./app.js";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { connectDatabase, disconnectDatabase } from "../config/database.js";
+import "../jobs/transaction.worker.js";
+import "../jobs/ramp.worker.js";
 
 async function start() {
   try {

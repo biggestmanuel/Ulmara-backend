@@ -1,6 +1,15 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { accountService } from "../services/account/account.service.js";
 import { successResponse, errorResponse } from "../utils/apiResponse.js";
+import { z } from "zod";
+
+const settingsSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  photoUrl: z.string().url().max(500).optional(),
+  defaultCurrency: z.string().trim().length(3).toUpperCase().optional(),
+  defaultLanguage: z.string().trim().min(2).max(10).optional(),
+  defaultNetwork: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON"]).optional(),
+}).strict();
 
 function handleError(err: unknown, reply: FastifyReply) {
   const statusCode = (err as { statusCode?: number })?.statusCode ?? 500;
@@ -39,7 +48,7 @@ export const accountController = {
 
   async updateSettings(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const result = await accountService.updateSettings(request.userId!, request.body as any);
+      const result = await accountService.updateSettings(request.userId!, settingsSchema.parse(request.body));
       return reply.send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);

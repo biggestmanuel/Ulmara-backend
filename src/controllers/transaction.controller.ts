@@ -36,10 +36,15 @@ export const transactionController = {
   async list(request: FastifyRequest, reply: FastifyReply) {
     try {
       const { page, limit } = request.query as { page?: string; limit?: string };
+      const parsedPage = page ? Number(page) : 1;
+      const parsedLimit = limit ? Number(limit) : 20;
+      if (!Number.isInteger(parsedPage) || parsedPage < 1 || !Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+        return reply.code(400).send(errorResponse("Invalid page or limit"));
+      }
       const result = await transactionService.list(
         request.userId!,
-        page ? parseInt(page) : 1,
-        limit ? parseInt(limit) : 20
+        parsedPage,
+        parsedLimit
       );
       return reply.send(successResponse(result));
     } catch (err) {
@@ -71,7 +76,7 @@ export const transactionController = {
     try {
       const { id } = request.params as { id: string };
       const { signedTx } = request.body as { signedTx?: string };
-      if (!signedTx || !/^0x[0-9a-f]+$/i.test(signedTx)) {
+      if (typeof signedTx !== "string" || signedTx.trim().length < 16 || signedTx.length > 1_000_000) {
         return reply.code(400).send(errorResponse("A serialized signed transaction is required"));
       }
       const result = await transactionService.broadcast(request.userId!, id, signedTx);

@@ -62,6 +62,15 @@ export const walletService = {
         { statusCode: 400 }
       );
     }
+    if (new Set(addresses.map((a) => a.chain)).size !== addresses.length) {
+      throw Object.assign(new Error("Only one wallet per chain may be registered"), { statusCode: 400 });
+    }
+    for (const { chain, address } of addresses) {
+      const adapter = await getChainAdapter(chain);
+      if (!adapter.isValidAddress(address)) {
+        throw Object.assign(new Error(`Invalid ${chain} wallet address`), { statusCode: 400 });
+      }
+    }
 
     const missing = SUPPORTED_CHAINS.filter((chain) => !addresses.some((a) => a.chain === chain));
     if (missing.length > 0) {

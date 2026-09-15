@@ -14,8 +14,11 @@ function signSession(userId: string) {
 }
 
 function sessionExpiry(): Date {
-  const days = parseInt(env.JWT_EXPIRES_IN) || 7;
-  return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  const match = /^(\d+)([smhd])$/.exec(env.JWT_EXPIRES_IN);
+  if (!match) return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const value = Number(match[1]);
+  const multipliers = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return new Date(Date.now() + value * multipliers[match[2] as keyof typeof multipliers]);
 }
 
 function sanitizeUser<T extends { passwordHash: string; pinHash: string | null }>(user: T) {

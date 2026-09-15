@@ -10,12 +10,15 @@ import { walletRoutes } from "../routes/wallet.routes.js";
 import { transactionRoutes } from "../routes/transaction.routes.js";
 import { paymentRoutes } from "../routes/payment.routes.js";
 import { rampRoutes } from "../routes/ramp.routes.js";
+import { errorHandler } from "../middleware/error.middleware.js";
+import { registerWebsocketHandlers } from "../websocket/socket.handler.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify<any, any, any, any>({
     loggerInstance: logger,
     disableRequestLogging: false,
   });
+  app.setErrorHandler(errorHandler);
 
   await app.register(cors, {
     origin: true,
@@ -31,6 +34,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   await app.register(websocket);
+  await registerWebsocketHandlers(app);
 
   app.get("/health", async () => {
     return { status: "ok", timestamp: new Date().toISOString() };

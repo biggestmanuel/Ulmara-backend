@@ -1,5 +1,6 @@
 import { prisma } from "../../config/database.js";
 import { generateAccountId } from "../../utils/generateAccountId.js";
+import type { Chain } from "@prisma/client";
 
 export const accountService = {
   async me(userId: string) {
@@ -51,9 +52,18 @@ export const accountService = {
       photoUrl: string;
       defaultCurrency: string;
       defaultLanguage: string;
-      defaultNetwork: string;
+      defaultNetwork: Chain;
     }>
   ) {
-    return prisma.user.update({ where: { id: userId }, data: input as any });
+    return prisma.user.update({
+      where: { id: userId },
+      data: input,
+      select: {
+        id: true, email: true, phone: true, name: true, photoUrl: true,
+        emailVerified: true, phoneVerified: true, biometricEnabled: true,
+        twoFactorEnabled: true, defaultCurrency: true, defaultLanguage: true,
+        defaultNetwork: true, createdAt: true, updatedAt: true,
+      },
+    });
   },
 };
