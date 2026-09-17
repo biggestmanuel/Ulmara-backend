@@ -1,4 +1,12 @@
-// Shared interface every chain adapter implements
+export class ProviderUnavailableError extends Error {
+  readonly code = "PROVIDER_UNAVAILABLE";
+  constructor(chain: string, operation: string) {
+    super(`${chain} ${operation} provider is not configured`);
+    this.name = "ProviderUnavailableError";
+  }
+}
+
+export type TransactionStatus = "pending" | "confirmed" | "failed";
 
 export interface ChainAdapter {
   chain: string;
@@ -16,7 +24,7 @@ export interface ChainAdapter {
 
   sendTransaction(signedTx: unknown): Promise<{ txHash: string }>;
 
-  getTransactionStatus(txHash: string): Promise<"pending" | "confirmed" | "failed">;
+  getTransactionStatus(txHash: string): Promise<TransactionStatus>;
 
   estimateFee(input: {
     fromAddress: string;

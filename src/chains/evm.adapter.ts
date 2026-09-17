@@ -1,5 +1,5 @@
 import { ethers } from "ethers";
-import type { ChainAdapter } from "./chain.types.js";
+import { ProviderUnavailableError, type ChainAdapter } from "./chain.types.js";
 
 const CHAIN_CONFIG: Record<string, { chainId: number; decimals: number }> = {
   ETH: { chainId: 1, decimals: 18 },
@@ -21,9 +21,10 @@ export function createEvmAdapter(chainName: string, rpcUrl: string, chainIdOverr
   const config = CHAIN_CONFIG[chainName];
   if (!config) throw new Error(`Unsupported EVM chain: ${chainName}`);
   const chainId = chainIdOverride ?? config.chainId;
-  const provider = new ethers.JsonRpcProvider(rpcUrl || "https://cloudflare-eth.com", chainId);
+  const provider = rpcUrl ? new ethers.JsonRpcProvider(rpcUrl, chainId) : null;
+  const requireProvider = () => provider ?? (() => { throw new ProviderUnavailableError(chainName, "RPC"); })();
   const sendSigned = async (signedTx: string) => {
-    const response = await provider.broadcastTransaction(signedTx);
+    const response = await requireProvider().broadcastTransaction(signedTx);
     return { txHash: response.hash };
   };
 
@@ -36,14 +37,14 @@ export function createEvmAdapter(chainName: string, rpcUrl: string, chainIdOverr
 
     async getBalance(address: string, asset?: string): Promise<string> {
       if (asset) throw new Error("ERC-20 balance reads are not implemented yet");
-      return ethers.formatUnits(await provider.getBalance(address), config.decimals);
+      return ethers.formatUnits(await requireProvider().getBalance(address), config.decimals);
     },
 
     async buildTransaction(input: NativeTransfer) {
       if (input.asset !== chainName && !(chainName === "BASE" && input.asset === "ETH")) {
         throw new Error(`Native EVM adapter cannot transfer ${input.asset} on ${chainName}`);
       }
-      const feeData = await provider.getFeeData();
+      const feeData = await requireProvider().getFeeData();
       return {
         from: input.fromAddress,
         to: ethers.getAddress(input.toAddress),
@@ -61,13 +62,13 @@ export function createEvmAdapter(chainName: string, rpcUrl: string, chainIdOverr
     },
 
     async getTransactionStatus(txHash: string) {
-      const receipt = await provider.getTransactionReceipt(txHash);
+      const receipt = await requireProvider().getTransactionReceipt(txHash);
       if (!receipt) return "pending" as const;
       return receipt.status === 1 ? "confirmed" as const : "failed" as const;
     },
 
     async estimateFee(input: NativeTransfer) {
-      const feeData = await provider.getFeeData();
+      const feeData = await requireProvider().getFeeData();
       const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
       if (!gasPrice) throw new Error("Unable to estimate gas price");
       return ethers.formatUnits(gasPrice * 21_000n, config.decimals);

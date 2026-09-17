@@ -7,8 +7,8 @@ API and services for the Ulmara wallet: Account IDs, multichain transfers, ramps
 - Fastify (`@fastify/cors`, `helmet`, `rate-limit`, `websocket`)
 - PostgreSQL + Prisma 7 (`@prisma/adapter-pg`)
 - Redis + BullMQ for queues/jobs
-- Chains: TON, BSC, ETH, SOL, Base, Polygon, TRON
-- TriVerify SDK for address validation, ethers.js fallback for BSC/Base
+- Chains: TON, BSC, ETH, SOL, Base, Polygon, TRON, BTC
+- TriVerify-primary on-chain address validation (strict RPC fallback for BSC/Base)
 - Auth: JWT (`jsonwebtoken`) + `bcryptjs`
 - Logging: `pino` / `pino-pretty`
 
@@ -70,7 +70,7 @@ npm test                 # vitest
 
 ## Status
 
-- Build unverified outside WSL (Prisma engine download can be blocked on restricted networks) — verify with `npx prisma generate` locally
+- BTC uses a configured Bitcoin Core JSON-RPC boundary (`BTC_RPC_URL`, optional basic-auth credentials) for balance, fee, broadcast, and confirmation. Transaction construction remains client/provider-owned.
 - OTP: placeholder/any-code bug fixed, now returns 501 when provider isn't configured (stale TODO comment in code still needs removing)
 - WebSocket auth: not implemented (TODO in `src/websocket`)
 - Paystack integration: not started, placeholder ramp provider only

@@ -8,7 +8,7 @@ const settingsSchema = z.object({
   photoUrl: z.string().url().max(500).optional(),
   defaultCurrency: z.string().trim().length(3).toUpperCase().optional(),
   defaultLanguage: z.string().trim().min(2).max(10).optional(),
-  defaultNetwork: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON"]).optional(),
+  defaultNetwork: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]).optional(),
 }).strict();
 
 function handleError(err: unknown, reply: FastifyReply) {
@@ -40,6 +40,16 @@ export const accountController = {
     try {
       const { accountId } = request.params as { accountId: string };
       const result = await accountService.getByAccountId(accountId);
+      return reply.send(successResponse(result));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
+  async resolveForTransfer(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const { accountId } = request.params as { accountId: string };
+      const result = await accountService.resolveForTransfer(request.userId!, accountId);
       return reply.send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);

@@ -5,10 +5,13 @@ import type { ChainName } from "../chains/index.js";
 import { z } from "zod";
 
 const sendSchema = z.object({
-  recipientAccountId: z.string().regex(/^\d{10}$/, "Recipient Account ID must be 10 digits"),
+  recipientAccountId: z.string().regex(/^\d{10}$/, "Recipient Account ID must be 10 digits").optional(),
+  recipientAddress: z.string().trim().min(1).max(120).optional(),
   asset: z.string().trim().min(1).max(20),
   amount: z.string().regex(/^\d+(\.\d+)?$/, "Amount must be a positive decimal").refine((value) => Number(value) > 0, "Amount must be greater than zero"),
-  network: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON"]),
+  network: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]),
+}).refine((v) => Boolean(v.recipientAccountId) !== Boolean(v.recipientAddress), {
+  message: "Provide exactly one of recipientAccountId or recipientAddress",
 });
 
 function handleError(err: unknown, reply: FastifyReply) {
@@ -18,10 +21,25 @@ function handleError(err: unknown, reply: FastifyReply) {
 }
 
 export const transactionController = {
+  async estimateFee(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const body = z.object({
+        recipientAddress: z.string().trim().min(1).max(120),
+        asset: z.string().trim().min(1).max(20),
+        amount: z.string().regex(/^\d+(\.\d+)?$/),
+        network: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]),
+      }).parse(request.body);
+      return reply.send(successResponse(await transactionService.estimateFee({ senderId: request.userId!, ...body })));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
   async send(request: FastifyRequest, reply: FastifyReply) {
     try {
       const body = sendSchema.parse(request.body) as {
-        recipientAccountId: string;
+        recipientAccountId?: string;
+        recipientAddress?: string;
         asset: string;
         amount: string;
         network: ChainName;

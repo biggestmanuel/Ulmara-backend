@@ -2,14 +2,14 @@ import { prisma } from "../../config/database.js";
 import { getChainAdapter, type ChainName } from "../../chains/index.js";
 import { logger } from "../../config/logger.js";
 
-const SUPPORTED_CHAINS: ChainName[] = ["ETH", "BSC", "BASE", "POLYGON", "TRON", "SOL", "TON"];
+const SUPPORTED_CHAINS: ChainName[] = ["ETH", "BSC", "BASE", "POLYGON", "TRON", "SOL", "TON", "BTC"];
 
 export const walletService = {
   async getBalances(userId: string) {
     const wallets = await prisma.wallet.findMany({ where: { userId } });
 
-    // Chain adapters' getBalance() isn't implemented yet (needs RPC wiring per chain),
-    // so we return each wallet with balance: null rather than fail the whole request.
+    // A missing chain provider is reported per wallet so one unavailable RPC
+    // does not hide balances from the other configured networks.
     const results = await Promise.all(
       wallets.map(async (wallet) => {
         try {
@@ -17,7 +17,7 @@ export const walletService = {
           const balance = await adapter.getBalance(wallet.address);
           return { chain: wallet.chain, address: wallet.address, balance };
         } catch (err) {
-          logger.warn({ chain: wallet.chain, err }, "Balance fetch not yet available for chain");
+          logger.warn({ chain: wallet.chain, err }, "Chain balance provider unavailable");
           return { chain: wallet.chain, address: wallet.address, balance: null };
         }
       })

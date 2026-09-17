@@ -10,8 +10,10 @@ import { walletRoutes } from "../routes/wallet.routes.js";
 import { transactionRoutes } from "../routes/transaction.routes.js";
 import { paymentRoutes } from "../routes/payment.routes.js";
 import { rampRoutes } from "../routes/ramp.routes.js";
+import { contactRoutes } from "../routes/contact.routes.js";
 import { errorHandler } from "../middleware/error.middleware.js";
 import { registerWebsocketHandlers } from "../websocket/socket.handler.js";
+import { validationRoutes } from "../routes/validation.routes.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify<any, any, any, any>({
@@ -46,6 +48,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(transactionRoutes, { prefix: "/api/transaction" });
   await app.register(paymentRoutes, { prefix: "/api/payment" });
   await app.register(rampRoutes, { prefix: "/api/ramp" });
+  await app.register(validationRoutes, { prefix: "/api/validation" });
+  await app.register(contactRoutes, { prefix: "/api/contact" });
 
   return app;
 }

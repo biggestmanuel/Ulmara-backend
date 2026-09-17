@@ -1,8 +1,9 @@
 import { Address, TonClient } from "@ton/ton";
 import { env } from "../../config/env.js";
-import type { ChainAdapter } from "../chain.types.js";
+import { ProviderUnavailableError, type ChainAdapter } from "../chain.types.js";
 
-const client = new TonClient({ endpoint: env.TON_RPC_URL ?? "https://toncenter.com/api/v2/jsonRPC" });
+const client = env.TON_RPC_URL ? new TonClient({ endpoint: env.TON_RPC_URL }) : null;
+const requireClient = () => client ?? (() => { throw new ProviderUnavailableError("TON", "RPC"); })();
 
 export const tonAdapter: ChainAdapter = {
   chain: "TON",
@@ -14,7 +15,7 @@ export const tonAdapter: ChainAdapter = {
 
   async getBalance(address, asset) {
     if (asset) throw new Error("Jetton balance reads are not implemented yet");
-    const balance = await client.getBalance(Address.parse(address));
+    const balance = await requireClient().getBalance(Address.parse(address));
     return Number(balance) / 1e9 + "";
   },
 
@@ -29,17 +30,17 @@ export const tonAdapter: ChainAdapter = {
   },
 
   async getTransactionStatus(txHash) {
-    if (!txHash) return "pending";
-    return "pending";
+    if (!txHash) throw new Error("TON transaction hash is required");
+    throw new ProviderUnavailableError("TON", "transaction status");
   },
 
   async estimateFee(input) {
     if (input.asset !== "TON") throw new Error("Jetton fee estimation is not implemented yet");
-    return "0";
+    throw new ProviderUnavailableError("TON", "fee estimation");
   },
 
   async sendSignedTransaction(signedTx: string) {
-    await client.sendFile(Buffer.from(signedTx, "base64"));
+    await requireClient().sendFile(Buffer.from(signedTx, "base64"));
     return { txHash: signedTx };
   },
 };

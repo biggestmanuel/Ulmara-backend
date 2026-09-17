@@ -5,7 +5,6 @@ import { logger } from "../config/logger.js";
 import { prisma } from "../config/database.js";
 import { getChainAdapter, type ChainName } from "../chains/index.js";
 
-// TODO: poll chain adapters for confirmation status, update Transaction row, emit websocket event
 export const transactionWorker = new Worker(
   "transactions",
   async (job) => {
@@ -17,7 +16,17 @@ export const transactionWorker = new Worker(
       const adapter = await getChainAdapter(transaction.network as ChainName);
       const status = await adapter.getTransactionStatus(txHash);
       if (status === "confirmed" || status === "failed") {
-        await prisma.transaction.update({ where: { id: transactionId }, data: { status: status === "confirmed" ? "COMPLETED" : "FAILED" } });
+        await prisma.transaction.update({
+          where: { id: transactionId },
+          data: { status: status === "confirmed" ? "COMPLETED" : "FAILED" },
+        });
+        if (status === "confirmed") {
+          await prisma.receipt.upsert({
+            where: { transactionId },
+            update: {},
+            create: { transactionId },
+          });
+        }
         return { transactionId, status };
       }
       await transactionQueue.add("check-transaction", { transactionId, txHash, checkOnly: true }, { delay: 10_000 });

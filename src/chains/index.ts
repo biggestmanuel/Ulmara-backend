@@ -1,6 +1,6 @@
 import type { ChainAdapter } from "./chain.types.js";
 
-export type ChainName = "TON" | "BSC" | "ETH" | "SOL" | "BASE" | "POLYGON" | "TRON";
+export type ChainName = "TON" | "BSC" | "ETH" | "SOL" | "BASE" | "POLYGON" | "TRON" | "BTC";
 
 // Lazy-loaded to avoid pulling in every chain SDK at server boot
 const loaders: Record<ChainName, () => Promise<ChainAdapter>> = {
@@ -11,6 +11,7 @@ const loaders: Record<ChainName, () => Promise<ChainAdapter>> = {
   POLYGON: async () => (await import("./evm/polygon/index.js")).polygonAdapter as unknown as ChainAdapter,
   SOL: async () => (await import("./solana/index.js")).solanaAdapter,
   TRON: async () => (await import("./tron/index.js")).tronAdapter,
+  BTC: async () => (await import("./btc/index.js")).bitcoinAdapter,
 };
 
 export async function getChainAdapter(chain: ChainName): Promise<ChainAdapter> {

@@ -39,10 +39,34 @@ export const accountService = {
   async getByAccountId(accountId: string) {
     const record = await prisma.accountId.findUnique({
       where: { accountId },
-      include: { user: { select: { id: true, name: true, photoUrl: true, wallets: { select: { chain: true, address: true } } } } },
+      include: { user: { select: { id: true, name: true, photoUrl: true, wallets: { select: { chain: true } } } } },
     });
     if (!record) throw Object.assign(new Error("Account ID not found"), { statusCode: 404 });
     return { accountId: record.accountId, profile: record.user };
+  },
+
+  async resolveForTransfer(requestingUserId: string, accountId: string) {
+    const record = await prisma.accountId.findUnique({
+      where: { accountId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            photoUrl: true,
+            wallets: { select: { chain: true, address: true } },
+          },
+        },
+      },
+    });
+    if (!record) throw Object.assign(new Error("Account ID not found"), { statusCode: 404 });
+    if (record.userId === requestingUserId) {
+      throw Object.assign(new Error("Cannot resolve your own Account ID for transfer"), { statusCode: 400 });
+    }
+    return {
+      accountId: record.accountId,
+      profile: record.user,
+    };
   },
 
   async updateSettings(

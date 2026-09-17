@@ -21,6 +21,10 @@ const envSchema = z.object({
   SOLANA_RPC_URL: z.string().url().optional(),
   TRON_RPC_URL: z.string().url().optional(),
   TON_RPC_URL: z.string().url().optional(),
+  BTC_RPC_URL: z.string().url().optional(),
+  BTC_RPC_USER: z.string().optional(),
+  BTC_RPC_PASSWORD: z.string().optional(),
+  TRIVERIFY_API_KEY: z.string().min(1).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
