@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { paymentService } from "../services/payment/payment.service.js";
-import { successResponse, errorResponse } from "../utils/apiResponse.js";
+import { successResponse, handleError } from "../utils/apiResponse.js";
 import { z } from "zod";
 
 const requestSchema = z.object({
@@ -10,20 +10,13 @@ const requestSchema = z.object({
   expiresAt: z.string().datetime().optional(),
 }).refine((value) => value.asset || value.symbol, "asset is required");
 
-function handleError(err: unknown, reply: FastifyReply) {
-  const statusCode = (err as { statusCode?: number })?.statusCode ?? 500;
-  const message = err instanceof Error ? err.message : "Something went wrong";
-  return reply.code(statusCode).send(errorResponse(message));
-}
-
 export const paymentController = {
   async createRequest(request: FastifyRequest, reply: FastifyReply) {
     try {
       const result = await paymentService.createRequest(request.userId!, requestSchema.parse(request.body));
       return reply.code(201).send(successResponse(result));
-      } catch (err) {
-        return reply.code(err instanceof z.ZodError ? 400 : (err as any)?.statusCode ?? 500)
-          .send(errorResponse(err instanceof Error ? err.message : "Something went wrong"));
+    } catch (err) {
+      return handleError(err, reply);
     }
   },
 

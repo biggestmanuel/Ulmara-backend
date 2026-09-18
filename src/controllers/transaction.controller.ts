@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { transactionService } from "../services/transaction/transaction.service.js";
-import { successResponse, errorResponse } from "../utils/apiResponse.js";
+import { successResponse, errorResponse, handleError } from "../utils/apiResponse.js";
 import type { ChainName } from "../chains/index.js";
 import { z } from "zod";
 
@@ -13,12 +13,6 @@ const sendSchema = z.object({
 }).refine((v) => Boolean(v.recipientAccountId) !== Boolean(v.recipientAddress), {
   message: "Provide exactly one of recipientAccountId or recipientAddress",
 });
-
-function handleError(err: unknown, reply: FastifyReply) {
-  const statusCode = err instanceof z.ZodError ? 400 : (err as { statusCode?: number })?.statusCode ?? 500;
-  const message = err instanceof Error ? err.message : "Something went wrong";
-  return reply.code(statusCode).send(errorResponse(message));
-}
 
 export const transactionController = {
   async estimateFee(request: FastifyRequest, reply: FastifyReply) {

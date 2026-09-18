@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { accountService } from "../services/account/account.service.js";
-import { successResponse, errorResponse } from "../utils/apiResponse.js";
+import { successResponse, handleError } from "../utils/apiResponse.js";
 import { z } from "zod";
 
 const settingsSchema = z.object({
@@ -10,12 +10,6 @@ const settingsSchema = z.object({
   defaultLanguage: z.string().trim().min(2).max(10).optional(),
   defaultNetwork: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]).optional(),
 }).strict();
-
-function handleError(err: unknown, reply: FastifyReply) {
-  const statusCode = (err as { statusCode?: number })?.statusCode ?? 500;
-  const message = err instanceof Error ? err.message : "Something went wrong";
-  return reply.code(statusCode).send(errorResponse(message));
-}
 
 export const accountController = {
   async me(request: FastifyRequest, reply: FastifyReply) {

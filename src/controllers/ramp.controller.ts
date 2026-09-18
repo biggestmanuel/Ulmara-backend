@@ -1,12 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { rampService } from "../services/ramp/ramp.service.js";
-import { successResponse, errorResponse } from "../utils/apiResponse.js";
-
-function handleError(err: unknown, reply: FastifyReply) {
-  const statusCode = (err as { statusCode?: number })?.statusCode ?? 500;
-  const message = err instanceof Error ? err.message : "Something went wrong";
-  return reply.code(statusCode).send(errorResponse(message));
-}
+import { successResponse, handleError } from "../utils/apiResponse.js";
 
 export const rampController = {
   async deposit(request: FastifyRequest, reply: FastifyReply) {

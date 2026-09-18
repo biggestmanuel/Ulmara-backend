@@ -4,6 +4,17 @@ import bcrypt from "bcryptjs";
 import jwt, { type SignOptions } from "jsonwebtoken";
 import { prisma } from "../../config/database.js";
 import { env } from "../../config/env.js";
+import { HttpError } from "../../utils/apiResponse.js";
+import {
+  createVerificationCode,
+  verifyVerificationCode,
+} from "./verificationCodeStore.js";
+
+// Throwing is the service's way of signalling an expected failure with a
+// client-readable message + status; controllers map it onto the response.
+function fail(statusCode: number, message: string): never {
+  throw new HttpError(statusCode, message);
+}
 
 const SALT_ROUNDS = 12;
 
@@ -28,13 +39,36 @@ function sanitizeUser<T extends { passwordHash: string; pinHash: string | null }
 
 export const authService = {
   async signup(input: { email: string; phone?: string; password: string }, meta?: { userAgent?: string; ipAddress?: string }) {
-    const existing = await prisma.user.findUnique({ where: { email: input.email } });
-    if (existing) throw Object.assign(new Error("Email already in use"), { statusCode: 409 });
+    const email = input.email.trim().toLowerCase();
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) fail(409, "An account with this email already exists. Try logging in instead.");
+
+    if (input.phone) {
+      const existingPhone = await prisma.user.findUnique({ where: { phone: input.phone } });
+      if (existingPhone) {
+        fail(409, "An account with this phone number already exists. Try logging in instead.");
+      }
+    }
+
+    if (input.password.length < 8) {
+      fail(400, "Password must be at least 8 characters");
+    }
 
     const passwordHash = await bcrypt.hash(input.password, SALT_ROUNDS);
-    const user = await prisma.user.create({
-      data: { email: input.email, phone: input.phone, passwordHash },
-    });
+    let user;
+    try {
+      user = await prisma.user.create({
+        data: { email, phone: input.phone, passwordHash },
+      });
+    } catch (err) {
+      // TOCTOU guard: a concurrent signup can claim the same email/phone between
+      // the pre-checks above and this insert. Map the unique violation to a 409
+      // instead of leaking a raw Prisma error as a 500.
+      if ((err as { code?: string })?.code === "P2002") {
+        fail(409, "An account with this email or phone already exists. Try logging in instead.");
+      }
+      throw err;
+    }
 
     const token = signSession(user.id);
     await prisma.session.create({
@@ -47,16 +81,22 @@ export const authService = {
       },
     });
 
-    // TODO: real email/SMS delivery — no provider wired yet
-    return { user: sanitizeUser(user), token };
+    const devVerificationCodes = env.DEV_VERIFICATION_MODE && env.NODE_ENV !== "production"
+      ? {
+          email: createVerificationCode(user.id, "email"),
+          phone: input.phone ? createVerificationCode(user.id, "phone") : undefined,
+        }
+      : undefined;
+
+    return { user: sanitizeUser(user), token, ...(devVerificationCodes ? { devVerificationCodes } : {}) };
   },
 
   async login(input: { email: string; password: string }, meta?: { userAgent?: string; ipAddress?: string }) {
-    const user = await prisma.user.findUnique({ where: { email: input.email } });
-    if (!user) throw Object.assign(new Error("Invalid email or password"), { statusCode: 401 });
+    const user = await prisma.user.findUnique({ where: { email: input.email.trim().toLowerCase() } });
+    if (!user) fail(401, "Invalid email or password. Please check your details and try again.");
 
     const valid = await bcrypt.compare(input.password, user.passwordHash);
-    if (!valid) throw Object.assign(new Error("Invalid email or password"), { statusCode: 401 });
+    if (!valid) fail(401, "Invalid email or password. Please check your details and try again.");
 
     const token = signSession(user.id);
     await prisma.session.create({
@@ -72,30 +112,55 @@ export const authService = {
   },
 
   async verifyEmail(input: { userId: string; code: string }) {
-    // TODO: check against a real stored OTP once email delivery exists — any 6-digit code passes for now
-      void input;
-      throw Object.assign(new Error("Email verification provider is not configured"), { statusCode: 501 });
+    const user = await prisma.user.findUnique({ where: { id: input.userId } });
+    if (!user) fail(404, "Account not found. Please sign up again.");
+    if (user.emailVerified) return sanitizeUser(user); // idempotent
+    verifyVerificationCode(input.userId, "email", input.code);
+    const updated = await prisma.user.update({
+      where: { id: input.userId },
+      data: { emailVerified: true },
+    });
+    return sanitizeUser(updated);
   },
 
   async verifyPhone(input: { userId: string; code: string }) {
-    void input;
-    throw Object.assign(new Error("SMS verification provider is not configured"), { statusCode: 501 });
+    const user = await prisma.user.findUnique({ where: { id: input.userId } });
+    if (!user) fail(404, "Account not found. Please sign up again.");
+    if (!user.phone) fail(400, "No phone number is linked to this account.");
+    if (user.phoneVerified) return sanitizeUser(user); // idempotent
+    verifyVerificationCode(input.userId, "phone", input.code);
+    const updated = await prisma.user.update({
+      where: { id: input.userId },
+      data: { phoneVerified: true },
+    });
+    return sanitizeUser(updated);
   },
 
+  // Issues a fresh code for a channel. Used by the verify screens' "Resend
+  // code" button. Rate-limiting lives on the route (@fastify/rate-limit).
+  async resendVerificationCode(userId: string, channel: "email" | "phone") {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) fail(404, "Account not found. Please sign up again.");
+    if (channel === "email" && user.emailVerified) {
+      fail(400, "Your email is already verified.");
+    }
+    if (channel === "phone" && (!user.phone || user.phoneVerified)) {
+      fail(400, "Your phone number is already verified.");
+    }
+    return { success: true, ...(env.DEV_VERIFICATION_MODE && env.NODE_ENV !== "production" ? { devCode: createVerificationCode(userId, channel) } : {}) };
+  },
+
+  // Always succeeds with the same shape so the endpoint can't be used to
+  // discover which emails are registered. No email provider is wired up yet,
+  // so nothing is actually sent — that lands with the production provider.
   async requestPasswordReset(input: { email: string }) {
-    const user = await prisma.user.findUnique({ where: { email: input.email } });
-    if (!user) return { success: true }; // don't leak which emails exist
+    await prisma.user.findUnique({ where: { email: input.email.trim().toLowerCase() } });
     return { success: true };
-  },
-
-  async resetPassword() {
-    // No reset-token table exists yet — needs a schema addition before this can work for real
-    throw Object.assign(new Error("Password reset not yet available"), { statusCode: 501 });
   },
 
   async setPin(userId: string, pin: string) {
     if (!/^\d{6}$/.test(pin)) {
-      throw Object.assign(new Error("PIN must be 6 digits"), { statusCode: 400 });
+      fail(400, "PIN must be 6 digits");
     }
     const pinHash = await bcrypt.hash(pin, SALT_ROUNDS);
     await prisma.user.update({ where: { id: userId }, data: { pinHash } });
@@ -104,33 +169,53 @@ export const authService = {
 
   async verifyPin(userId: string, pin: string) {
     if (!/^\d{6}$/.test(pin)) {
-      throw Object.assign(new Error("PIN must be 6 digits"), { statusCode: 400 });
+      fail(400, "PIN must be 6 digits");
     }
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user?.pinHash) {
-      throw Object.assign(new Error("No PIN set for this account"), { statusCode: 409 });
+      fail(409, "No PIN set for this account");
     }
     const valid = await bcrypt.compare(pin, user.pinHash);
     if (!valid) {
-      throw Object.assign(new Error("Incorrect PIN"), { statusCode: 401 });
+      fail(401, "Incorrect PIN");
     }
     return { valid: true };
   },
 
   async changePin(userId: string, currentPin: string, newPin: string) {
     if (!/^\d{6}$/.test(newPin)) {
-      throw Object.assign(new Error("PIN must be 6 digits"), { statusCode: 400 });
+      fail(400, "PIN must be 6 digits");
     }
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user?.pinHash) {
-      throw Object.assign(new Error("No PIN set for this account"), { statusCode: 409 });
+      fail(409, "No PIN set for this account");
     }
     const valid = await bcrypt.compare(currentPin, user.pinHash);
     if (!valid) {
-      throw Object.assign(new Error("Current PIN is incorrect"), { statusCode: 401 });
+      fail(401, "Current PIN is incorrect");
     }
     const pinHash = await bcrypt.hash(newPin, SALT_ROUNDS);
     await prisma.user.update({ where: { id: userId }, data: { pinHash } });
+    return { success: true };
+  },
+
+  // Permanent account deletion. Prisma cascades sessions, wallets, payment
+  // requests and ramp transactions (onDelete: Cascade); transactions and the
+  // account-id row reference the user with RESTRICT, so they are detached/
+  // cleared first inside a transaction. Mnemonics/keys never leave the
+  // device, so wiping local storage on the client is enough for those.
+  async deleteAccount(userId: string) {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) fail(404, "Account not found");
+
+    await prisma.$transaction(async (tx) => {
+      await tx.session.deleteMany({ where: { userId } });
+      // Transaction rows reference the user with RESTRICT and carry the
+      // ledger history, so they are removed with the account here.
+      await tx.$executeRaw`DELETE FROM "Transaction" WHERE "senderId" = ${userId}`;
+      await tx.accountId.deleteMany({ where: { userId } });
+      await tx.user.delete({ where: { id: userId } });
+    });
     return { success: true };
   },
 
@@ -151,10 +236,10 @@ export const authService = {
   async revokeSession(userId: string, sessionId: string, currentToken: string) {
     const session = await prisma.session.findUnique({ where: { id: sessionId } });
     if (!session || session.userId !== userId) {
-      throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+      fail(404, "Session not found");
     }
     if (session.token === currentToken) {
-      throw Object.assign(new Error("Cannot revoke your current session — log out instead"), { statusCode: 400 });
+      fail(400, "Cannot revoke your current session — log out instead");
     }
     await prisma.session.delete({ where: { id: sessionId } });
     return { success: true };

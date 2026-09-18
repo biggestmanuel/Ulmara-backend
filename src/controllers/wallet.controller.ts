@@ -1,13 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { walletService } from "../services/wallet/wallet.service.js";
-import { successResponse, errorResponse } from "../utils/apiResponse.js";
+import { successResponse, handleError } from "../utils/apiResponse.js";
 import type { ChainName } from "../chains/index.js";
-
-function handleError(err: unknown, reply: FastifyReply) {
-  const statusCode = (err as { statusCode?: number })?.statusCode ?? 500;
-  const message = err instanceof Error ? err.message : "Something went wrong";
-  return reply.code(statusCode).send(errorResponse(message));
-}
 
 export const walletController = {
   async getBalances(request: FastifyRequest, reply: FastifyReply) {
