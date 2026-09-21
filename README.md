@@ -51,8 +51,13 @@ REDIS_URL=
 JWT_SECRET=
 PORT=
 NODE_ENV=
+# CORS allowlist, comma-separated (required non-empty; https-only in production)
+ALLOWED_ORIGINS=http://localhost:8081,http://localhost:19006
 TRIVERIFY_API_KEY=
 RPC_ETH / BSC / BASE / POLYGON / SOL / TRON / TON=
+# ETH network for signing/verification: 11155111 (Sepolia) during the pilot,
+# switch to 1 at mainnet go-live — a config change, no code edit needed.
+ETHEREUM_CHAIN_ID=11155111
 GAS_SPONSOR_PRIVATE_KEY=
 ```
 

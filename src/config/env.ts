@@ -17,8 +17,22 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default("7d"),
 
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+  // Comma-separated CORS allowlist. Defaults cover the local dev/web flow
+  // only; production deployments must set their real https:// origins (the
+  // empty default fails fast in buildApp in production).
+  ALLOWED_ORIGINS: z
+    .string()
+    .default("http://localhost:8081,http://localhost:19006,http://localhost:19000,http://localhost:3000"),
   ETHEREUM_RPC_URL: z.string().url().optional(),
-  ETHEREUM_CHAIN_ID: z.coerce.number().int().positive().default(1),
+  // Sepolia (11155111) for the current dev/testnet pilot phase — the
+  // frontend signs ETH transfers on Sepolia (lib/signing/evm.ts) and the
+  // external-transfer tamper check compares signatures against this value.
+  // At mainnet go-live, set ETHEREUM_CHAIN_ID=1 in the environment; no code
+  // change is needed, every consumer reads this config.
+  ETHEREUM_CHAIN_ID: z.coerce.number().int().positive().default(11155111),
+  BSC_CHAIN_ID: z.coerce.number().int().positive().optional(),
+  BASE_CHAIN_ID: z.coerce.number().int().positive().optional(),
+  POLYGON_CHAIN_ID: z.coerce.number().int().positive().optional(),
   BSC_RPC_URL: z.string().url().optional(),
   BASE_RPC_URL: z.string().url().optional(),
   POLYGON_RPC_URL: z.string().url().optional(),

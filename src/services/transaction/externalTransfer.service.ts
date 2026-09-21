@@ -1,8 +1,10 @@
 import { ethers } from "ethers";
 import { prisma } from "../../config/database.js";
+import { env } from "../../config/env.js";
 import { getChainAdapter, type ChainName } from "../../chains/index.js";
 import { verifyAddressExists } from "../../blockchain/triverify.js";
 import { pinLockoutService } from "../auth/pinLockout.service.js";
+import { transactionService } from "./transaction.service.js";
 import { transactionQueue } from "../../queues/transaction.queue.js";
 import { logger } from "../../config/logger.js";
 
@@ -122,7 +124,16 @@ export const externalTransferService = {
   // Consume a prepared intent: decode the client-signed transaction, verify
   // every money-moving field against the stored intent (never trust the
   // client), then create the ledger row and enqueue the broadcast.
-  async submit(userId: string, intentId: string, signedTx: string): Promise<unknown> {
+  // `idempotencyKey` (client UUID, one per attempt) makes retries after a
+  // lost response return the original transaction instead of creating a
+  // second ledger row and broadcasting the same signature twice.
+  async submit(userId: string, intentId: string, signedTx: string, idempotencyKey: string): Promise<unknown> {
+    // Replay fast-path: the original submit created its row, but the response
+    // was lost (mobile network timeout). Return that row unchanged — no new
+    // transfer, no second broadcast. Deliberately before the single-use claim.
+    const existing = await transactionService.findByIdempotencyKey(idempotencyKey, userId);
+    if (existing) return { ...existing, direction: "sent", counterpartyAccountId: existing.recipientAddress };
+
     // Atomic single-use claim: exactly one request can flip READY -> USED.
     // Replays and concurrent submits lose the update and are rejected below.
     const claimed = await prisma.externalTransferIntent.updateMany({
@@ -135,6 +146,12 @@ export const externalTransferService = {
       data: { status: "USED", usedAt: new Date() },
     });
     if (claimed.count !== 1) {
+      // Two requests carrying the SAME new idempotency key both passed the
+      // replay check and raced the claim; the loser's key is not a replay yet.
+      // Re-check before rejecting so it replays the winner's row.
+      const raced = await transactionService.findByIdempotencyKey(idempotencyKey, userId);
+      if (raced) return { ...raced, direction: "sent", counterpartyAccountId: raced.recipientAddress };
+
       const intent = await prisma.externalTransferIntent.findUnique({ where: { id: intentId } });
       if (!intent || intent.userId !== userId) fail(404, "Transfer intent not found");
       if (intent!.status === "USED") fail(409, "This transfer was already submitted");
@@ -155,16 +172,33 @@ export const externalTransferService = {
       const intent = (await prisma.externalTransferIntent.findUnique({ where: { id: intentId } }))!;
       const verified = await this.verifySignedTransaction(intent, signedTx);
 
-      const transaction = await prisma.transaction.create({
-        data: {
-          senderId: userId,
-          recipientAddress: intent.recipient,
-          asset: intent.asset,
-          amount: intent.amount,
-          network: intent.chain,
-          status: "PENDING",
-        },
-      });
+      let transaction;
+      try {
+        transaction = await prisma.transaction.create({
+          data: {
+            senderId: userId,
+            recipientAddress: intent.recipient,
+            asset: intent.asset,
+            amount: intent.amount,
+            network: intent.chain,
+            status: "PENDING",
+            idempotencyKey,
+          },
+        });
+      } catch (err: any) {
+        // Lost a unique-constraint race on the key: another concurrent request
+        // (same client retrying, or a second device) created the row first.
+        if (err?.code !== "P2002") throw err;
+        const winner = await transactionService.findByIdempotencyKey(idempotencyKey, userId);
+        if (!winner) throw err;
+        // Release this intent: it was consumed by a duplicate, so the honest
+        // retry path must not see it as permanently spent.
+        await prisma.externalTransferIntent.updateMany({
+          where: { id: intentId, status: "USED", transactionId: null },
+          data: { status: "READY", usedAt: null },
+        }).catch(() => undefined);
+        return { ...winner, direction: "sent", counterpartyAccountId: winner.recipientAddress };
+      }
       createdTransactionId = transaction.id;
 
       await prisma.externalTransferIntent.update({
@@ -244,12 +278,16 @@ export const externalTransferService = {
   },
 };
 
+// Expected chainId for signed-transaction verification. Every value is
+// env-driven so a network switch (e.g. ETH Sepolia -> mainnet at go-live) is
+// a config change, never a code change. BSC/Base/Polygon currently have no
+// testnet phase, so their env overrides are optional.
 function getEvmChainId(chain: string): number {
   switch (chain) {
-    case "ETH": return 1;
-    case "BSC": return 56;
-    case "BASE": return 8453;
-    case "POLYGON": return 137;
+    case "ETH": return env.ETHEREUM_CHAIN_ID;
+    case "BSC": return env.BSC_CHAIN_ID ?? 56;
+    case "BASE": return env.BASE_CHAIN_ID ?? 8453;
+    case "POLYGON": return env.POLYGON_CHAIN_ID ?? 137;
     // Unreachable in practice: verifySignedTransaction already checks the
     // chain is one of the four EVM networks before calling this.
     default: throw Object.assign(new Error(`Not an EVM chain: ${chain}`), { statusCode: 400 });

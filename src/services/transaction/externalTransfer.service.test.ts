@@ -12,7 +12,7 @@ import { ethers } from "ethers";
 const LOCKOUT_MS = 15 * 60 * 1000;
 const START = 1_700_000_000_000;
 
-const { users, intents, ethAdapter } = vi.hoisted(() => {
+const { users, intents, ethAdapter, createdTransactions } = vi.hoisted(() => {
   // prisma.user model — drives the real pinLockoutService.
   const users = new Map<
     string,
@@ -40,7 +40,10 @@ const { users, intents, ethAdapter } = vi.hoisted(() => {
     isValidAddress: (address: string) => /^0x[0-9a-fA-F]{40}$/.test(address),
     estimateFee: async () => "0.00021",
   };
-  return { users, intents, ethAdapter };
+  // prisma.transaction rows, keyed by id. Backs the idempotency-key replay
+  // lookup and enforces the column's unique constraint like Postgres would.
+  const createdTransactions = new Map<string, Record<string, unknown>>();
+  return { users, intents, ethAdapter, createdTransactions };
 });
 
 vi.mock("../../config/database.js", () => ({
@@ -122,10 +125,34 @@ vi.mock("../../config/database.js", () => ({
       findUnique: vi.fn(async () => ({ address: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", chain: "ETH" })),
     },
     transaction: {
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-        id: `tx-${(data.recipientAddress as string).slice(2, 5)}-${Math.random().toString(16).slice(2, 8)}`,
-        ...data,
-      })),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        if (typeof data.idempotencyKey === "string") {
+          for (const row of createdTransactions.values()) {
+            if (row.idempotencyKey === data.idempotencyKey) {
+              // Postgres unique violation, Prisma code P2002.
+              throw Object.assign(new Error("Unique constraint failed on the fields: (`idempotencyKey`)"), {
+                code: "P2002",
+              });
+            }
+          }
+        }
+        const row = {
+          id: `tx-${(data.recipientAddress as string).slice(2, 5)}-${createdTransactions.size + 1}`,
+          ...data,
+        };
+        createdTransactions.set(row.id, row);
+        return { ...row };
+      }),
+      findUnique: vi.fn(async ({ where }: { where: { id?: string; idempotencyKey?: string } }) => {
+        if (where.idempotencyKey !== undefined) {
+          for (const row of createdTransactions.values()) {
+            if (row.idempotencyKey === where.idempotencyKey) return { ...row };
+          }
+          return null;
+        }
+        const row = where.id ? createdTransactions.get(where.id) : undefined;
+        return row ? { ...row } : null;
+      }),
       update: vi.fn(async () => ({})),
     },
   },
@@ -154,7 +181,19 @@ vi.mock("../../config/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+// Sepolia — mirrors the pilot-phase backend config (env.ts default), so the
+// chainId assertions below are deterministic regardless of local .env files
+// or CI variables.
+vi.mock("../../config/env.js", () => ({
+  env: {
+    NODE_ENV: "test",
+    DEV_VERIFICATION_MODE: true,
+    ETHEREUM_CHAIN_ID: 11155111,
+  },
+}));
+
 import { prisma } from "../../config/database.js";
+import { env } from "../../config/env.js";
 import { verifyAddressExists } from "../../blockchain/triverify.js";
 import { transactionQueue } from "../../queues/transaction.queue.js";
 import { pinLockoutService, PIN_LOCKOUT_MS } from "../auth/pinLockout.service.js";
@@ -176,7 +215,11 @@ async function signEthTransfer(input: { to: string; amount: string; chainId?: nu
     to: input.to,
     value: ethers.parseEther(input.amount),
     nonce: 0,
-    chainId: input.chainId ?? 1,
+    // Default to the configured chain, exactly like the real frontend signer
+    // (lib/signing/evm.ts reads Sepolia = 11155111 from its NETWORKS table).
+    // Hardcoding a literal here previously masked a backend/frontend chainId
+    // mismatch: fixtures signed mainnet while the frontend signed Sepolia.
+    chainId: input.chainId ?? env.ETHEREUM_CHAIN_ID,
     gasLimit: 21_000n,
     maxFeePerGas: ethers.parseUnits("30", "gwei"),
     maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
@@ -202,10 +245,16 @@ const freshUser = (pinHash: string | null = CORRECT_PIN_HASH) => {
 beforeEach(() => {
   users.clear();
   intents.clear();
+  createdTransactions.clear();
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(START);
   vi.clearAllMocks();
 });
+
+// Idempotency keys: only uniqueness matters at the service layer (the
+// controller owns UUID format validation).
+let keySeq = 0;
+const nextKey = () => `idem-key-${++keySeq}`;
 
 describe("external transfer prepare", () => {
   it("rejects a wrong PIN with 401 and creates no intent", async () => {
@@ -287,8 +336,9 @@ describe("external transfer submit", () => {
     const userId = freshUser();
     const prepared = await prepareIntent(userId);
     const signedTx = await signEthTransfer({ to: RECIPIENT, amount: AMOUNT });
+    const idempotencyKey = nextKey();
 
-    const result = (await externalTransferService.submit(userId, prepared.id, signedTx)) as {
+    const result = (await externalTransferService.submit(userId, prepared.id, signedTx, idempotencyKey)) as {
       id: string;
       status: string;
       recipientAddress: string;
@@ -317,13 +367,69 @@ describe("external transfer submit", () => {
     expect(intent.transactionId).toBe(result.id);
   });
 
+  it("replays the original transaction when the same idempotency key is resubmitted, creating no second row or broadcast", async () => {
+    const userId = freshUser();
+    const prepared = await prepareIntent(userId);
+    const signedTx = await signEthTransfer({ to: RECIPIENT, amount: AMOUNT });
+    const idempotencyKey = nextKey();
+
+    const first = (await externalTransferService.submit(userId, prepared.id, signedTx, idempotencyKey)) as {
+      id: string;
+    };
+
+    // Mobile network timeout-and-retry: the same key comes back with the same
+    // signature. The original transaction is returned and nothing is created.
+    const replay = (await externalTransferService.submit(userId, prepared.id, signedTx, idempotencyKey)) as {
+      id: string;
+    };
+    expect(replay.id).toBe(first.id);
+    expect(createdTransactions.size).toBe(1);
+    expect(vi.mocked(transactionQueue.add)).toHaveBeenCalledTimes(1);
+
+    // A DIFFERENT attempt against the spent intent is still rejected: the
+    // single-use claim, not the idempotency key, is what blocks it.
+    await expect(
+      externalTransferService.submit(userId, prepared.id, signedTx, nextKey()),
+    ).rejects.toMatchObject({ statusCode: 409, message: "This transfer was already submitted" });
+    expect(createdTransactions.size).toBe(1);
+    expect(intents.get(prepared.id)!.status).toBe("USED");
+  });
+
+  it("returns the original row when a duplicate hits the unique-key constraint, and releases the duplicate's intent", async () => {
+    const userId = freshUser();
+    const prepared = await prepareIntent(userId);
+    const signedTx = await signEthTransfer({ to: RECIPIENT, amount: AMOUNT });
+    const idempotencyKey = nextKey();
+
+    const winner = (await externalTransferService.submit(userId, prepared.id, signedTx, idempotencyKey)) as {
+      id: string;
+    };
+    vi.mocked(transactionQueue.add).mockClear();
+
+    // The client retried, prepared a fresh intent (its old one is spent), and
+    // resubmitted with the SAME key. The fast-path replay lookup is simulated
+    // as missing (the retry was already in flight when the row landed), so
+    // the create hits the unique constraint and folds back to the winner.
+    const retryIntent = await prepareIntent(userId);
+    vi.mocked(prisma.transaction.findUnique).mockResolvedValueOnce(null);
+    const replay = (await externalTransferService.submit(userId, retryIntent.id, signedTx, idempotencyKey)) as {
+      id: string;
+    };
+
+    expect(replay.id).toBe(winner.id);
+    expect(createdTransactions.size).toBe(1);
+    expect(vi.mocked(transactionQueue.add)).not.toHaveBeenCalled();
+    // The retry's fresh intent was released, not consumed by the duplicate.
+    expect(intents.get(retryIntent.id)!.status).toBe("READY");
+  });
+
   it("rejects a tampered submit (signature for different recipient/amount/chain) and rolls the intent back to READY", async () => {
     const userId = freshUser();
     const prepared = await prepareIntent(userId);
 
     // The attacker swapped the recipient to their own address before signing.
     const tampered = await signEthTransfer({ to: "0x00000000000000000000000000000000deadbeef", amount: AMOUNT });
-    await expect(externalTransferService.submit(userId, prepared.id, tampered)).rejects.toMatchObject({
+    await expect(externalTransferService.submit(userId, prepared.id, tampered, nextKey())).rejects.toMatchObject({
       statusCode: 400,
       message: "The signed transaction does not match the prepared transfer",
     });
@@ -336,15 +442,46 @@ describe("external transfer submit", () => {
 
     // Same story for an amount swap and a wrong-network signature.
     const amountTampered = await signEthTransfer({ to: RECIPIENT, amount: "99" });
-    await expect(externalTransferService.submit(userId, prepared.id, amountTampered)).rejects.toMatchObject({
+    await expect(externalTransferService.submit(userId, prepared.id, amountTampered, nextKey())).rejects.toMatchObject({
       statusCode: 400,
     });
     const wrongChain = await signEthTransfer({ to: RECIPIENT, amount: AMOUNT, chainId: 56 });
-    await expect(externalTransferService.submit(userId, prepared.id, wrongChain)).rejects.toMatchObject({
+    await expect(externalTransferService.submit(userId, prepared.id, wrongChain, nextKey())).rejects.toMatchObject({
       statusCode: 400,
       message: "The signed transaction targets a different network than the prepared transfer",
     });
     expect(intents.get(prepared.id)!.status).toBe("READY");
+  });
+
+  // Regression test for the Sepolia/mainnet chainId mismatch: the backend
+  // expects signatures for env.ETHEREUM_CHAIN_ID (Sepolia during the pilot).
+  // A mainnet-signed transaction must be rejected — and this only stays true
+  // because the default fixture signs with the CONFIGURED chain, not a
+  // hardcoded literal that could coincide with the backend's expectation.
+  it("rejects a mainnet-signed transaction while the configured chain (Sepolia) succeeds", async () => {
+    const userId = freshUser();
+    const prepared = await prepareIntent(userId);
+
+    // A mainnet (1) signature for a Sepolia-configured backend is exactly the
+    // real-world case: the user's wallet signing for the wrong network.
+    const mainnetSigned = await signEthTransfer({ to: RECIPIENT, amount: AMOUNT, chainId: 1 });
+    await expect(externalTransferService.submit(userId, prepared.id, mainnetSigned, nextKey())).rejects.toMatchObject({
+      statusCode: 400,
+      message: "The signed transaction targets a different network than the prepared transfer",
+    });
+    // No broadcast, no ledger row; the intent stays retryable.
+    expect(vi.mocked(transactionQueue.add)).not.toHaveBeenCalled();
+    expect(vi.mocked(prisma.transaction.create)).not.toHaveBeenCalled();
+    expect(intents.get(prepared.id)!.status).toBe("READY");
+
+    // The same intent then accepts a Sepolia (configured-chain) signature.
+    const sepoliaSigned = await signEthTransfer({ to: RECIPIENT, amount: AMOUNT });
+    const result = (await externalTransferService.submit(userId, prepared.id, sepoliaSigned, nextKey())) as {
+      status: string;
+    };
+    expect(result.status).toBe("PENDING");
+    expect(vi.mocked(transactionQueue.add)).toHaveBeenCalledTimes(1);
+    expect(intents.get(prepared.id)!.status).toBe("USED");
   });
 
   it("rejects a reused intent (single-use) and an expired intent", async () => {
@@ -353,11 +490,13 @@ describe("external transfer submit", () => {
     const signedTx = await signEthTransfer({ to: RECIPIENT, amount: AMOUNT });
 
     // First submit goes through...
-    await externalTransferService.submit(userId, prepared.id, signedTx);
+    await externalTransferService.submit(userId, prepared.id, signedTx, nextKey());
     const txCountAfterFirst = vi.mocked(prisma.transaction.create).mock.calls.length;
 
-    // ...a replay with even a valid signature is rejected: 409, no new row.
-    await expect(externalTransferService.submit(userId, prepared.id, signedTx)).rejects.toMatchObject({
+    // ...a replay with a DIFFERENT key (a second attempt on the spent intent)
+    // is rejected: 409, no new row. Same-key retries replay instead — covered
+    // by the dedicated idempotency tests above.
+    await expect(externalTransferService.submit(userId, prepared.id, signedTx, nextKey())).rejects.toMatchObject({
       statusCode: 409,
       message: "This transfer was already submitted",
     });
@@ -367,7 +506,7 @@ describe("external transfer submit", () => {
     const secondUser = freshUser();
     const stale = await prepareIntent(secondUser);
     vi.setSystemTime(START + 11 * 60 * 1000);
-    await expect(externalTransferService.submit(secondUser, stale.id, signedTx)).rejects.toMatchObject({
+    await expect(externalTransferService.submit(secondUser, stale.id, signedTx, nextKey())).rejects.toMatchObject({
       statusCode: 410,
     });
     expect(vi.mocked(prisma.transaction.create).mock.calls.length).toBe(txCountAfterFirst);
@@ -379,11 +518,11 @@ describe("external transfer submit", () => {
     const attacker = freshUser();
 
     await expect(
-      externalTransferService.submit(attacker, prepared.id, await signEthTransfer({ to: RECIPIENT, amount: AMOUNT })),
+      externalTransferService.submit(attacker, prepared.id, await signEthTransfer({ to: RECIPIENT, amount: AMOUNT }), nextKey()),
     ).rejects.toMatchObject({ statusCode: 404, message: "Transfer intent not found" });
 
     // Undecodable blob: 400, intent still READY (retryable).
-    await expect(externalTransferService.submit(owner, prepared.id, "not-a-signed-transaction")).rejects.toMatchObject({
+    await expect(externalTransferService.submit(owner, prepared.id, "not-a-signed-transaction", nextKey())).rejects.toMatchObject({
       statusCode: 400,
       message: "The signed transaction could not be decoded",
     });

@@ -112,6 +112,11 @@ model Transaction {
   feeAmount          Decimal?                @db.Decimal(36, 18)
   status             TransactionStatus       @default(PENDING)
   txHash             String?
+  // Client-generated UUID, one per transfer attempt. Retries (mobile network
+  // timeout-and-retry, double-tap racing the disabled button) replay the
+  // original row instead of creating a second transfer. Nullable: rows from
+  // before the field existed have no key.
+  idempotencyKey     String?                 @unique
   createdAt          DateTime                @default(now())
   updatedAt          DateTime                @updatedAt
   receipt            Receipt?

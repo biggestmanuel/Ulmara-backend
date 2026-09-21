@@ -23,6 +23,10 @@ const prepareSchema = z.object({
 
 const submitSchema = z.object({
   signedTransaction: z.string().trim().min(16).max(1_000_000),
+  // Client-generated UUID, one per submit attempt: a retry after a lost
+  // response replays the original transaction instead of creating a second
+  // ledger row and broadcasting the same signature twice.
+  idempotencyKey: z.string().uuid("idempotencyKey must be a UUID"),
 });
 
 export const externalTransferController = {
@@ -50,7 +54,7 @@ export const externalTransferController = {
         return reply.code(400).send({ success: false, message: "Invalid transfer intent id" });
       }
       const body = submitSchema.parse(request.body);
-      const result = await externalTransferService.submit(request.userId!, id, body.signedTransaction);
+      const result = await externalTransferService.submit(request.userId!, id, body.signedTransaction, body.idempotencyKey);
       return reply.code(201).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);

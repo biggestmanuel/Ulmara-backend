@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
+import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { authRoutes } from "../routes/auth.routes.js";
 import { accountRoutes } from "../routes/account.routes.js";
@@ -22,8 +23,12 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
   app.setErrorHandler(errorHandler);
 
+  // CORS is locked to an explicit origin allowlist: any origin not listed
+  // gets a 403 from @fastify/cors. ALLOWED_ORIGINS is a comma-separated list
+  // (frontend web builds, local Expo web). In production the variable is
+  // required and must contain at least one https:// origin.
   await app.register(cors, {
-    origin: true,
+    origin: parseAllowedOrigins(env.ALLOWED_ORIGINS),
   });
 
   await app.register(helmet, {
@@ -52,4 +57,22 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(contactRoutes, { prefix: "/api/contact" });
 
   return app;
+}
+
+export function parseAllowedOrigins(raw: string): string[] {
+  const origins = [
+    ...new Set(
+      raw
+        .split(",")
+        .map((origin) => origin.trim())
+        .filter((origin) => origin.length > 0),
+    ),
+  ];
+  if (origins.length === 0) {
+    throw new Error("ALLOWED_ORIGINS must list at least one origin");
+  }
+  if (env.NODE_ENV === "production" && !origins.every((origin) => origin.startsWith("https://"))) {
+    throw new Error("ALLOWED_ORIGINS must contain only https:// origins in production");
+  }
+  return origins;
 }

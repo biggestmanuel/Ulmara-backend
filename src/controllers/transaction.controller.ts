@@ -14,6 +14,11 @@ const sendSchema = z.object({
   // any transaction is created. Format-only here; the lockout service owns
   // the actual comparison so failures are counted centrally.
   pin: z.string().regex(/^\d{6}$/, "PIN must be 6 digits"),
+  // Client-generated UUID, one per transfer attempt: repeats (network
+  // timeout-and-retry, double-tap) replay the original transaction instead of
+  // creating a second one. Required — without it the endpoint cannot
+  // distinguish a retry from a new transfer.
+  idempotencyKey: z.string().uuid("idempotencyKey must be a UUID"),
 }).refine((v) => Boolean(v.recipientAccountId) !== Boolean(v.recipientAddress), {
   message: "Provide exactly one of recipientAccountId or recipientAddress",
 });
@@ -42,6 +47,7 @@ export const transactionController = {
         amount: string;
         network: ChainName;
         pin: string;
+        idempotencyKey: string;
       };
       const result = await transactionService.send({ senderId: request.userId!, ...body });
       return reply.code(201).send(successResponse(result));
@@ -96,6 +102,8 @@ export const transactionController = {
       if (typeof signedTx !== "string" || signedTx.trim().length < 16 || signedTx.length > 1_000_000) {
         return reply.code(400).send(errorResponse("A serialized signed transaction is required"));
       }
+      // A repeated broadcast with the same signedTx replays the row rather
+      // than enqueueing a second broadcast job.
       const result = await transactionService.broadcast(request.userId!, id, signedTx);
       return reply.send(successResponse(result));
     } catch (err) {

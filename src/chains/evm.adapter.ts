@@ -2,6 +2,8 @@ import { ethers } from "ethers";
 import { ProviderUnavailableError, type ChainAdapter } from "./chain.types.js";
 
 const CHAIN_CONFIG: Record<string, { chainId: number; decimals: number }> = {
+  // Mainnet fallback only — the concrete ETH adapter is created with
+  // env.ETHEREUM_CHAIN_ID, which runs Sepolia during the pilot phase.
   ETH: { chainId: 1, decimals: 18 },
   BSC: { chainId: 56, decimals: 18 },
   BASE: { chainId: 8453, decimals: 18 },
