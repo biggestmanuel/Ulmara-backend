@@ -14,6 +14,14 @@ jobs:
   test:
     name: Typecheck & test
     runs-on: ubuntu-latest
+    # config/env.ts and prisma7.config.ts resolve these at load time (even
+    # `prisma generate` needs DATABASE_URL), yet every DB/Redis touchpoint in
+    # the suite is mocked and no real connection is ever made — so CI-only
+    # dummies are sufficient and no real secrets live here.
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-secret-not-used-for-anything-real
     steps:
       - uses: actions/checkout@v4
 
@@ -33,12 +41,5 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # config/env.ts validates process.env at import time, so the suite needs
-      # these defined even though every DB/Redis touchpoint is mocked in tests
-      # and no real connection is ever made.
       - name: Test
         run: npm test
-        env:
-          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
-          REDIS_URL: redis://localhost:6379
-          JWT_SECRET: ci-only-secret-not-used-for-anything-real
