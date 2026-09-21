@@ -67,6 +67,13 @@ const { users, db, freshUser, advanceMs } = vi.hoisted(() => {
 
 vi.mock("../../config/database.js", () => ({ prisma: db }));
 
+// The real pinLockoutService logs security events through this mock, so the
+// tests can assert on the structured fields and scan for PIN leakage.
+const { logger } = vi.hoisted(() => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), fatal: vi.fn() },
+}));
+vi.mock("../../config/logger.js", () => ({ logger }));
+
 import { pinLockoutService, PIN_MAX_ATTEMPTS, PIN_LOCKOUT_MS } from "./pinLockout.service.js";
 
 const START = 1_700_000_000_000;
@@ -131,7 +138,37 @@ beforeEach(() => {
   if (!correctPinHash) correctPinHash = bcrypt.hashSync(CORRECT_PIN, 4);
   // Give every fresh user the same PIN credential.
   for (const row of users.values()) row.pinHash = correctPinHash;
+  vi.clearAllMocks();
 });
+
+// Security-log contract shared by every lockout path: the warn event carries
+// the gate, user id, and lockout duration — and never the PIN value.
+function expectLockoutArmed(gate: string, userId: string) {
+  expect(logger.warn).toHaveBeenCalledTimes(1);
+  const [fields, message] = vi.mocked(logger.warn).mock.calls[0];
+  expect(fields).toMatchObject({
+    event: "pin_lockout_armed",
+    gate,
+    userId,
+    lockoutMs: PIN_LOCKOUT_MS,
+    lockoutMinutes: 15,
+    timestamp: new Date(START).toISOString(),
+    lockedUntil: new Date(START + PIN_LOCKOUT_MS).toISOString(),
+  });
+  expect(message).toContain("5 consecutive failed attempts");
+}
+
+// No gate may ever write a PIN value (or its hash) into any log line.
+function expectNoPinInLogs() {
+  const logged = JSON.stringify([
+    ...vi.mocked(logger.warn).mock.calls,
+    ...vi.mocked(logger.info).mock.calls,
+    ...vi.mocked(logger.error).mock.calls,
+  ]);
+  expect(logged).not.toContain(CORRECT_PIN);
+  expect(logged).not.toContain(WRONG_PIN);
+  expect(logged).not.toContain(correctPinHash);
+}
 
 describe("PIN attempt lockout for transaction authorization", () => {
   it("rejects a wrong PIN with 401 and creates no transaction", async () => {
@@ -165,11 +202,27 @@ describe("PIN attempt lockout for transaction authorization", () => {
     expect(users.get(userId)!.pinFailedAttempts).toBe(0);
     expect(users.get(userId)!.pinLockedUntil).toBe(START + PIN_LOCKOUT_MS);
 
+    // Security event: warn-level, transfer gate, correct fields, no PIN values.
+    expectLockoutArmed("transfer", userId);
+    expectNoPinInLogs();
+
     // While locked, even the CORRECT PIN is rejected — the window is absolute.
     const correctWhileLocked = await sendEndpoint(userId, sendBody(CORRECT_PIN));
     expect(correctWhileLocked.status).toBe(423);
     expect(correctWhileLocked.message).toContain("Too many incorrect PIN attempts");
     expect(correctWhileLocked.transactionCreated).toBe(false);
+
+    // Cooldown attempts are visible too (info-level, not warnings).
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    const [cooldown] = vi.mocked(logger.info).mock.calls[0];
+    expect(cooldown).toMatchObject({
+      event: "pin_attempt_during_lockout",
+      gate: "transfer",
+      userId,
+      lockedUntil: new Date(START + PIN_LOCKOUT_MS).toISOString(),
+    });
+    expect(logger.warn).toHaveBeenCalledTimes(1); // no second arming event
+    expectNoPinInLogs();
 
     // And a wrong PIN during the lockout burns no extra attempt state.
     const wrongWhileLocked = await sendEndpoint(userId, sendBody(WRONG_PIN));
@@ -184,14 +237,26 @@ describe("PIN attempt lockout for transaction authorization", () => {
       await sendEndpoint(userId, sendBody(WRONG_PIN));
     }
     expect(users.get(userId)!.pinLockedUntil).not.toBeNull();
+    expectLockoutArmed("transfer", userId);
 
-    advanceMs(PIN_LOCKOUT_MS + 1); // cooldown over
+    // Wrong attempts DURING the cooldown each log one lightweight line and
+    // burn no attempt state, so a brute-forcer gains nothing but visibility.
+    advanceMs(60_000);
+    await sendEndpoint(userId, sendBody(WRONG_PIN));
+    await sendEndpoint(userId, sendBody(WRONG_PIN));
+    expect(logger.info).toHaveBeenCalledTimes(2);
+    expect(users.get(userId)!.pinLockedUntil).toBe(START + PIN_LOCKOUT_MS);
+
+    advanceMs(PIN_LOCKOUT_MS); // cooldown over
 
     const res = await sendEndpoint(userId, sendBody(CORRECT_PIN));
     expect(res.status).toBe(201);
     expect(res.transactionCreated).toBe(true);
     expect(users.get(userId)!.pinFailedAttempts).toBe(0);
     expect(users.get(userId)!.pinLockedUntil).toBeNull();
+    // Still exactly one arming event; retries in cooldown never re-arm.
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expectNoPinInLogs();
   });
 
   it("resets the failed-attempt counter on successful PIN entry", async () => {

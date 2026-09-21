@@ -49,6 +49,12 @@ const { users, db } = vi.hoisted(() => {
 
 vi.mock("../../config/database.js", () => ({ prisma: db }));
 
+// Security-event assertions run against this mock of the real logger.
+const { logger } = vi.hoisted(() => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), fatal: vi.fn() },
+}));
+vi.mock("../../config/logger.js", () => ({ logger }));
+
 import { pinLockoutService, lockedMessage } from "./pinLockout.service.js";
 
 const CORRECT_PIN = "111111";
@@ -61,6 +67,8 @@ async function loginPinEndpoint(userId: string, pin: string): Promise<{ status: 
   try {
     const lock = await pinLockoutService.getLockState(userId);
     if (lock.locked && lock.until) {
+      // Same security event the real authService.verifyPin emits.
+      pinLockoutService.logAttemptDuringLockout(userId, "login", lock.until);
       const minutes = Math.max(1, Math.ceil((lock.until.getTime() - Date.now()) / 60_000));
       throw Object.assign(
         new Error(`Too many incorrect PIN attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`),
@@ -71,7 +79,7 @@ async function loginPinEndpoint(userId: string, pin: string): Promise<{ status: 
     if (!user?.pinHash) throw Object.assign(new Error("No PIN set for this account"), { statusCode: 409 });
     const valid = await bcrypt.compare(pin, user.pinHash);
     if (!valid) {
-      const attempts = await pinLockoutService.recordFailure(userId);
+      const attempts = await pinLockoutService.recordFailure(userId, "login");
       if (attempts >= 5) throw Object.assign(new Error(lockedMessage()), { statusCode: 423 });
       throw Object.assign(new Error("Incorrect PIN. Try again."), { statusCode: 401 });
     }
@@ -85,7 +93,7 @@ async function loginPinEndpoint(userId: string, pin: string): Promise<{ status: 
 // Verbatim mirror of authService.changePin's current-PIN gate.
 async function changePinEndpoint(userId: string, currentPin: string, newPin: string): Promise<{ status: number; message?: string }> {
   try {
-    await pinLockoutService.assertPinAuthorized(userId, currentPin);
+    await pinLockoutService.assertPinAuthorized(userId, currentPin, "changePin");
     return { status: 200 };
   } catch (err) {
     return { status: (err as { statusCode?: number }).statusCode ?? 500, message: err instanceof Error ? err.message : undefined };
@@ -114,7 +122,35 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(START);
   if (!pinHash) pinHash = bcrypt.hashSync(CORRECT_PIN, 4);
+  vi.clearAllMocks();
 });
+
+// Security-log contract: warn carries gate/user/duration, never a PIN value.
+function expectLockoutArmed(gate: string, userId: string) {
+  expect(logger.warn).toHaveBeenCalledTimes(1);
+  const [fields, message] = vi.mocked(logger.warn).mock.calls[0];
+  expect(fields).toMatchObject({
+    event: "pin_lockout_armed",
+    gate,
+    userId,
+    lockoutMs: 15 * 60 * 1000,
+    lockoutMinutes: 15,
+    timestamp: new Date(START).toISOString(),
+    lockedUntil: new Date(START + 15 * 60 * 1000).toISOString(),
+  });
+  expect(message).toContain("5 consecutive failed attempts");
+}
+
+function expectNoPinInLogs() {
+  const logged = JSON.stringify([
+    ...vi.mocked(logger.warn).mock.calls,
+    ...vi.mocked(logger.info).mock.calls,
+    ...vi.mocked(logger.error).mock.calls,
+  ]);
+  expect(logged).not.toContain(CORRECT_PIN);
+  expect(logged).not.toContain(WRONG_PIN);
+  expect(logged).not.toContain(pinHash);
+}
 
 describe("login PIN gate (POST /api/auth/verify-pin) lockout", () => {
   it("rejects a wrong PIN with 401 without granting login", async () => {
@@ -138,10 +174,18 @@ describe("login PIN gate (POST /api/auth/verify-pin) lockout", () => {
     expect(fifth.message).toBe("Too many incorrect PIN attempts. Try again in 15 minutes.");
     expect(users.get(userId)!.pinLockedUntil).toBeInstanceOf(Date);
 
-    // The right PIN does not open a locked door.
+    // Security event attributed to the login gate.
+    expectLockoutArmed("login", userId);
+
+    // The right PIN does not open a locked door; the attempt is logged.
     const correctWhileLocked = await loginPinEndpoint(userId, CORRECT_PIN);
     expect(correctWhileLocked.status).toBe(423);
     expect(correctWhileLocked.message).toContain("Too many incorrect PIN attempts");
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    const [cooldown] = vi.mocked(logger.info).mock.calls[0];
+    expect(cooldown).toMatchObject({ event: "pin_attempt_during_lockout", gate: "login", userId });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expectNoPinInLogs();
   });
 
   it("allows the correct PIN again after the 15-minute cooldown and resets the counter", async () => {
@@ -230,6 +274,9 @@ describe("changePin current-PIN gate", () => {
     }
     // 5th wrong current-PIN arms the lockout via the shared counter.
     expect(users.get(userId)!.pinLockedUntil).not.toBeNull();
+    // Security event attributed to the changePin gate.
+    expectLockoutArmed("changePin", userId);
+    expectNoPinInLogs();
 
     // And a transfer with the correct PIN is blocked while locked.
     await expect(transferGate(userId, CORRECT_PIN)).resolves.toMatchObject({ status: 423 });

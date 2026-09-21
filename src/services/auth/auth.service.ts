@@ -171,13 +171,16 @@ export const authService = {
   // Login/account-entry PIN check. Shares the transfer PIN lockout: one
   // counter guards both gates because they verify the same User.pinHash, so
   // brute-forcing either must lock both. Non-revealing messages match the
-  // transfer gate exactly.
+  // transfer gate exactly. Attempts are attributed to the "login" gate in
+  // the security log.
   async verifyPin(userId: string, pin: string) {
     if (!/^\d{6}$/.test(pin)) {
       fail(400, "PIN must be 6 digits");
     }
     const lock = await pinLockoutService.getLockState(userId);
     if (lock.locked && lock.until) {
+      // Same security event the transfer gate emits on a cooldown attempt.
+      pinLockoutService.logAttemptDuringLockout(userId, "login", lock.until);
       const minutes = Math.max(1, Math.ceil((lock.until.getTime() - Date.now()) / 60_000));
       fail(423, `Too many incorrect PIN attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`);
     }
@@ -187,7 +190,7 @@ export const authService = {
     }
     const valid = await bcrypt.compare(pin, user.pinHash);
     if (!valid) {
-      const attempts = await pinLockoutService.recordFailure(userId);
+      const attempts = await pinLockoutService.recordFailure(userId, "login");
       if (attempts >= 5) fail(423, lockedMessage());
       fail(401, "Incorrect PIN. Try again.");
     }
@@ -206,8 +209,9 @@ export const authService = {
     // The current-PIN check verifies the same credential, so it counts toward
     // the shared counter too — otherwise changePin would be an untracked way
     // to brute-force the PIN. Delegates the compare + count/reset to the
-    // lockout service's authorization primitive.
-    await pinLockoutService.assertPinAuthorized(userId, currentPin);
+    // lockout service's authorization primitive; attributed to "changePin"
+    // in the security log.
+    await pinLockoutService.assertPinAuthorized(userId, currentPin, "changePin");
     const pinHash = await bcrypt.hash(newPin, SALT_ROUNDS);
     await prisma.user.update({ where: { id: userId }, data: { pinHash } });
     return { success: true };

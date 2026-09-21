@@ -1,13 +1,18 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "../../config/database.js";
+import { logger } from "../../config/logger.js";
 import { HttpError } from "../../utils/apiResponse.js";
+
+// Which flow a PIN attempt belongs to. Attribution flows into the security
+// log lines so a brute-force campaign can be traced to its entry point.
+// "transfer" covers both internal sends and external-wallet prepares.
+export type PinGate = "login" | "transfer" | "changePin";
 
 // Per-user PIN attempt lockout for transfer authorization. State lives in the
 // database (User.pinFailedAttempts / User.pinLockedUntil) so it is enforced
 // server-side and survives server restarts and multiple app instances.
 export const PIN_MAX_ATTEMPTS = 5;
 export const PIN_LOCKOUT_MS = 15 * 60 * 1000;
-
 // The two failure messages are deliberately identical whether the account is
 // already locked or just became locked, and never reveal how many attempts
 // remain — the response cannot be used to enumerate accounts or probe PINs.
@@ -23,6 +28,23 @@ export function lockedMessage(): string {
 
 function lockUntil(): Date {
   return new Date(Date.now() + PIN_LOCKOUT_MS);
+}
+
+// Structured security event: a lockout just armed. Only non-sensitive fields
+// are logged — never the PIN itself, hashes, emails, or request metadata.
+function logLockoutArmed(gate: PinGate, userId: string, until: Date): void {
+  logger.warn(
+    {
+      event: "pin_lockout_armed",
+      gate,
+      userId,
+      timestamp: new Date().toISOString(),
+      lockoutMs: PIN_LOCKOUT_MS,
+      lockoutMinutes: PIN_LOCKOUT_MS / 60_000,
+      lockedUntil: until.toISOString(),
+    },
+    `PIN lockout armed after ${PIN_MAX_ATTEMPTS} consecutive failed attempts`,
+  );
 }
 
 export const pinLockoutService = {
@@ -43,7 +65,10 @@ export const pinLockoutService = {
   // row, so two concurrent wrong attempts can never both land on the same
   // count (which would let 9 attempts trigger a 5-attempt lockout).
   // Returns the number of failed attempts recorded after this one.
-  async recordFailure(userId: string): Promise<number> {
+  // `gate` attributes the attempt to a flow for the security log; it defaults
+  // to "transfer" because every shared-counter consumer except verifyPin
+  // goes through assertPinAuthorized's transfer/changePin call sites.
+  async recordFailure(userId: string, gate: PinGate = "transfer"): Promise<number> {
     for (;;) {
       const user = await prisma.user.findUnique({
         where: { id: userId },
@@ -68,7 +93,12 @@ export const pinLockoutService = {
           pinLockedUntil: isLockingAttempt ? lockUntil() : expired ? null : undefined,
         },
       });
-      if (updated.count === 1) return next;
+      if (updated.count === 1) {
+        // Exactly one request wins the arming write, so the security event
+        // fires once per lockout, attributed to the gate that hit the limit.
+        if (isLockingAttempt) logLockoutArmed(gate, userId, lockUntil());
+        return next;
+      }
       // Another request mutated the counter between read and write; retry
       // against its value instead of double-counting or skipping one.
     }
@@ -82,14 +112,16 @@ export const pinLockoutService = {
     });
   },
 
-  // Full authorize-PIN flow used by transfer endpoints. Order matters:
+  // Full authorize-PIN flow used by transfer/changePin endpoints. Order matters:
   // 1. reject while locked (without burning an attempt or even hashing),
   // 2. compare against the stored hash,
   // 3. on success reset the counter, on failure record the attempt.
   // Throws HttpError with a non-revealing message in every failure case.
-  async assertPinAuthorized(userId: string, pin: string): Promise<void> {
+  // `gate` feeds the security events (lockout armed / attempt during lockout).
+  async assertPinAuthorized(userId: string, pin: string, gate: PinGate = "transfer"): Promise<void> {
     const lock = await this.getLockState(userId);
     if (lock.locked && lock.until) {
+      this.logAttemptDuringLockout(userId, gate, lock.until);
       const minutes = Math.max(1, Math.ceil((lock.until.getTime() - Date.now()) / 60_000));
       throw new HttpError(
         423,
@@ -108,7 +140,7 @@ export const pinLockoutService = {
 
     const valid = await bcrypt.compare(pin, user.pinHash);
     if (!valid) {
-      const attempts = await this.recordFailure(userId);
+      const attempts = await this.recordFailure(userId, gate);
       if (attempts >= PIN_MAX_ATTEMPTS) {
         throw new HttpError(423, LOCKED_MESSAGE);
       }
@@ -116,5 +148,22 @@ export const pinLockoutService = {
     }
 
     await this.reset(userId);
+  },
+
+  // Structured security event for a rejected attempt made while the account
+  // is already locked out — makes repeated brute-force pressure during the
+  // cooldown visible without burning any attempt state. Lightweight on
+  // purpose: one info line, no hashing or extra queries.
+  logAttemptDuringLockout(userId: string, gate: PinGate, until: Date): void {
+    logger.info(
+      {
+        event: "pin_attempt_during_lockout",
+        gate,
+        userId,
+        timestamp: new Date().toISOString(),
+        lockedUntil: until.toISOString(),
+      },
+      "PIN attempt rejected while account is locked out",
+    );
   },
 };
