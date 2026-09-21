@@ -11,6 +11,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "postinstall": "prisma skills sync || exit 0"
   },
   "dependencies": {
