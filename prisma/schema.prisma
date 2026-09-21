@@ -44,32 +44,38 @@ enum PaymentRequestStatus {
   CANCELLED
 }
 
+enum ExternalIntentStatus {
+  READY
+  USED
+}
+
 model User {
-  id                String   @id @default(uuid())
-  email             String   @unique
-  phone             String?  @unique
+  id                String    @id @default(uuid())
+  email             String    @unique
+  phone             String?   @unique
   passwordHash      String
   pinHash           String?
   name              String?
   photoUrl          String?
-  emailVerified     Boolean  @default(false)
-  phoneVerified     Boolean  @default(false)
-  biometricEnabled  Boolean  @default(false)
-  twoFactorEnabled  Boolean  @default(false)
-  pinFailedAttempts Int      @default(0)
+  emailVerified     Boolean   @default(false)
+  phoneVerified     Boolean   @default(false)
+  biometricEnabled  Boolean   @default(false)
+  twoFactorEnabled  Boolean   @default(false)
+  pinFailedAttempts Int       @default(0)
   pinLockedUntil    DateTime?
-  defaultCurrency   String   @default("NGN")
-  defaultLanguage   String   @default("en")
+  defaultCurrency   String    @default("NGN")
+  defaultLanguage   String    @default("en")
   defaultNetwork    Chain?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  accountId         AccountId?
-  wallets           Wallet[]
-  sentTransactions  Transaction[]      @relation("SentTransactions")
-  paymentRequests   PaymentRequest[]
-  rampTransactions  RampTransaction[]
-  sessions          Session[]
+  accountId               AccountId?
+  wallets                 Wallet[]
+  sentTransactions        Transaction[]            @relation("SentTransactions")
+  paymentRequests         PaymentRequest[]
+  rampTransactions        RampTransaction[]
+  sessions                Session[]
+  externalTransferIntents ExternalTransferIntent[]
 }
 
 model AccountId {
@@ -95,24 +101,50 @@ model Wallet {
 }
 
 model Transaction {
-  id                  String             @id @default(uuid())
-  senderId             String
-  sender                User               @relation("SentTransactions", fields: [senderId], references: [id])
-  recipientAccountId  String?
-  recipientAddress    String?
-  asset               String
-  amount              Decimal            @db.Decimal(36, 18)
-  network             Chain
-  feeAmount           Decimal?           @db.Decimal(36, 18)
-  status              TransactionStatus  @default(PENDING)
-  txHash              String?
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
-  receipt             Receipt?
+  id                 String                  @id @default(uuid())
+  senderId           String
+  sender             User                    @relation("SentTransactions", fields: [senderId], references: [id])
+  recipientAccountId String?
+  recipientAddress   String?
+  asset              String
+  amount             Decimal                 @db.Decimal(36, 18)
+  network            Chain
+  feeAmount          Decimal?                @db.Decimal(36, 18)
+  status             TransactionStatus       @default(PENDING)
+  txHash             String?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  receipt            Receipt?
+  externalIntent     ExternalTransferIntent?
 
   @@index([senderId])
   @@index([recipientAccountId])
   @@index([status])
+}
+
+// A server-verified plan for a client-signed external transfer. The client
+// prepares (PIN + recipient validated via TriVerify), signs locally with keys
+// that never leave the device, then submits the signature. The backend decodes
+// the signature and verifies it matches this record before broadcasting.
+model ExternalTransferIntent {
+  id            String               @id @default(uuid())
+  userId        String
+  user          User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain         Chain
+  asset         String
+  amount        Decimal              @db.Decimal(36, 18)
+  recipient     String
+  fee           String?
+  status        ExternalIntentStatus @default(READY)
+  expiresAt     DateTime
+  usedAt        DateTime?
+  transactionId String?              @unique
+  transaction   Transaction?         @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@index([userId])
+  @@index([status, expiresAt])
 }
 
 model Contact {
@@ -125,8 +157,8 @@ model Contact {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([ownerId])
   @@unique([ownerId, name])
+  @@index([ownerId])
 }
 
 model Receipt {
@@ -137,16 +169,16 @@ model Receipt {
 }
 
 model PaymentRequest {
-  id        String                @id @default(uuid())
-  userId    String
-  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  asset     String
-  amount    Decimal?              @db.Decimal(36, 18)
-  status    PaymentRequestStatus  @default(OPEN)
-  expiresAt DateTime?
-  createdAt DateTime              @default(now())
-  fulfilledTransactionId String?  @unique
-  fulfilledAt DateTime?
+  id                     String               @id @default(uuid())
+  userId                 String
+  user                   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset                  String
+  amount                 Decimal?             @db.Decimal(36, 18)
+  status                 PaymentRequestStatus @default(OPEN)
+  expiresAt              DateTime?
+  createdAt              DateTime             @default(now())
+  fulfilledTransactionId String?              @unique
+  fulfilledAt            DateTime?
 
   @@index([userId])
 }
