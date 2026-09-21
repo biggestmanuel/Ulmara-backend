@@ -1,6 +1,7 @@
-// TODO: wire up to Tribridge/TriVerify SDK (tribridge.tech) once friend's API is ready
 // Address-existence verification layer, used on top of each chain adapter's
-// format-only isValidAddress() check during the Send flow's Safety Confirmation step.
+// format-only isValidAddress() check during the Send flow's Safety Confirmation
+// step. Backed by the TriVerify SDK (@tribridge/triverify — routing lives in
+// blockchain/verify.ts) with a local RPC fallback for BSC/Base.
 
 import { getChainAdapter, type ChainName } from "../chains/index.js";
 import { verifyAddressOnChain, type ChainId } from "./verify.js";

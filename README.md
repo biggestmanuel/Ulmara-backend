@@ -71,9 +71,9 @@ npm test                 # vitest
 ## Status
 
 - BTC uses a configured Bitcoin Core JSON-RPC boundary (`BTC_RPC_URL`, optional basic-auth credentials) for balance, fee, broadcast, and confirmation. Transaction construction remains client/provider-owned.
-- OTP: placeholder/any-code bug fixed, now returns 501 when provider isn't configured (stale TODO comment in code still needs removing)
-- WebSocket auth: not implemented (TODO in `src/websocket`)
-- Paystack integration: not started, placeholder ramp provider only
+- OTP: placeholder/any-code bug fixed, now returns 501 when provider isn't configured
+- WebSocket: `/ws` validates a JWT but publishes no events yet (`WS_EVENTS` is defined, unused)
+- Ramp integration: not started — the ramp worker marks every transaction FAILED until the Bachs (or Paystack/Flutterwave) provider is wired up
 - ERC-20/USDT support: not implemented (native coins only)
 
 ## Notes
