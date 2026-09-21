@@ -10,6 +10,10 @@ const sendSchema = z.object({
   asset: z.string().trim().min(1).max(20),
   amount: z.string().regex(/^\d+(\.\d+)?$/, "Amount must be a positive decimal").refine((value) => Number(value) > 0, "Amount must be greater than zero"),
   network: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]),
+  // Authorization PIN, verified server-side against the stored hash before
+  // any transaction is created. Format-only here; the lockout service owns
+  // the actual comparison so failures are counted centrally.
+  pin: z.string().regex(/^\d{6}$/, "PIN must be 6 digits"),
 }).refine((v) => Boolean(v.recipientAccountId) !== Boolean(v.recipientAddress), {
   message: "Provide exactly one of recipientAccountId or recipientAddress",
 });
@@ -37,6 +41,7 @@ export const transactionController = {
         asset: string;
         amount: string;
         network: ChainName;
+        pin: string;
       };
       const result = await transactionService.send({ senderId: request.userId!, ...body });
       return reply.code(201).send(successResponse(result));

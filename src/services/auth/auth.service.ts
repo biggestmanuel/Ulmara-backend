@@ -1,5 +1,5 @@
-// bcryptjs does not currently ship TypeScript declarations.
-// @ts-expect-error — the package exposes the required runtime API.
+// Type declarations come from the dev-only @types/bcryptjs package
+// (bcryptjs 2.x does not bundle its own).
 import bcrypt from "bcryptjs";
 import jwt, { type SignOptions } from "jsonwebtoken";
 import { prisma } from "../../config/database.js";

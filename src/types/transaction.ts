@@ -7,4 +7,6 @@ export interface SendTransactionInput {
   asset: string;
   amount: string;
   network: ChainName;
+  /** Authorization PIN, verified server-side before any transaction is created. */
+  pin: string;
 }

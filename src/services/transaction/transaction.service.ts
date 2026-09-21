@@ -3,6 +3,7 @@ import { getChainAdapter, type ChainName } from "../../chains/index.js";
 import { transactionQueue } from "../../queues/transaction.queue.js";
 import type { SendTransactionInput } from "../../types/transaction.js";
 import { verifyAddressExists } from "../../blockchain/triverify.js";
+import { pinLockoutService } from "../auth/pinLockout.service.js";
 
 export const transactionService = {
   async estimateFee(input: { senderId: string; recipientAddress: string; asset: string; amount: string; network: ChainName }) {
@@ -30,6 +31,15 @@ export const transactionService = {
   },
 
   async send(input: SendTransactionInput) {
+    // Transfer authorization: the PIN is checked against the server-side hash
+    // before anything else runs, so a wrong or missing PIN can never create a
+    // transaction, resolve a recipient, or burn fees. Failures count toward
+    // the per-user lockout (5 wrong attempts -> 15 minute lockout).
+    if (!input.pin) {
+      throw Object.assign(new Error("A 6-digit PIN is required to authorize this transfer"), { statusCode: 400 });
+    }
+    await pinLockoutService.assertPinAuthorized(input.senderId, input.pin);
+
     let recipientAccountId = input.recipientAccountId;
     let recipientAddress = input.recipientAddress;
     if (recipientAccountId) {

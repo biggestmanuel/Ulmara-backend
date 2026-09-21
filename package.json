@@ -39,6 +39,7 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^26.4.0",
     "prisma": "^7.10.0",
