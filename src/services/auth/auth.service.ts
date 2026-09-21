@@ -9,6 +9,7 @@ import {
   createVerificationCode,
   verifyVerificationCode,
 } from "./verificationCodeStore.js";
+import { pinLockoutService, lockedMessage } from "./pinLockout.service.js";
 
 // Throwing is the service's way of signalling an expected failure with a
 // client-readable message + status; controllers map it onto the response.
@@ -167,9 +168,18 @@ export const authService = {
     return { success: true };
   },
 
+  // Login/account-entry PIN check. Shares the transfer PIN lockout: one
+  // counter guards both gates because they verify the same User.pinHash, so
+  // brute-forcing either must lock both. Non-revealing messages match the
+  // transfer gate exactly.
   async verifyPin(userId: string, pin: string) {
     if (!/^\d{6}$/.test(pin)) {
       fail(400, "PIN must be 6 digits");
+    }
+    const lock = await pinLockoutService.getLockState(userId);
+    if (lock.locked && lock.until) {
+      const minutes = Math.max(1, Math.ceil((lock.until.getTime() - Date.now()) / 60_000));
+      fail(423, `Too many incorrect PIN attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`);
     }
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user?.pinHash) {
@@ -177,8 +187,11 @@ export const authService = {
     }
     const valid = await bcrypt.compare(pin, user.pinHash);
     if (!valid) {
-      fail(401, "Incorrect PIN");
+      const attempts = await pinLockoutService.recordFailure(userId);
+      if (attempts >= 5) fail(423, lockedMessage());
+      fail(401, "Incorrect PIN. Try again.");
     }
+    await pinLockoutService.reset(userId);
     return { valid: true };
   },
 
@@ -190,10 +203,11 @@ export const authService = {
     if (!user?.pinHash) {
       fail(409, "No PIN set for this account");
     }
-    const valid = await bcrypt.compare(currentPin, user.pinHash);
-    if (!valid) {
-      fail(401, "Current PIN is incorrect");
-    }
+    // The current-PIN check verifies the same credential, so it counts toward
+    // the shared counter too — otherwise changePin would be an untracked way
+    // to brute-force the PIN. Delegates the compare + count/reset to the
+    // lockout service's authorization primitive.
+    await pinLockoutService.assertPinAuthorized(userId, currentPin);
     const pinHash = await bcrypt.hash(newPin, SALT_ROUNDS);
     await prisma.user.update({ where: { id: userId }, data: { pinHash } });
     return { success: true };

@@ -11,8 +11,15 @@ export const PIN_LOCKOUT_MS = 15 * 60 * 1000;
 // The two failure messages are deliberately identical whether the account is
 // already locked or just became locked, and never reveal how many attempts
 // remain — the response cannot be used to enumerate accounts or probe PINs.
+// One counter guards both doors (login and transfers): they verify the same
+// User.pinHash, so brute-forcing either gate must lock the other.
 const LOCKED_MESSAGE = "Too many incorrect PIN attempts. Try again in 15 minutes.";
 const INCORRECT_MESSAGE = "Incorrect PIN. Try again.";
+
+// The canonical lockout copy, shared by every gate so the UX is identical.
+export function lockedMessage(): string {
+  return LOCKED_MESSAGE;
+}
 
 function lockUntil(): Date {
   return new Date(Date.now() + PIN_LOCKOUT_MS);
