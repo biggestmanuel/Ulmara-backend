@@ -2,11 +2,13 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { externalTransferService } from "../services/transaction/externalTransfer.service.js";
 import { successResponse, handleError } from "../utils/apiResponse.js";
-import type { ChainName } from "../chains/index.js";
+import { CHAIN_NAMES, type ChainName } from "../chains/index.js";
 
 // Same chain set as /transaction/send; asset legality per chain is enforced
-// in the service (native assets only for now).
-const chainEnum = z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]);
+// in the service (native assets only for now). Values are the UPPERCASE wire
+// identifiers from CHAIN_NAMES — the frontend (lib/api/externalTransfers.ts)
+// sends exactly these.
+const chainEnum = z.enum(CHAIN_NAMES);
 
 const prepareSchema = z.object({
   chain: chainEnum,

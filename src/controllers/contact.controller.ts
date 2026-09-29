@@ -2,12 +2,13 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { contactService } from "../services/contact.service.js";
 import { successResponse, handleError } from "../utils/apiResponse.js";
+import { CHAIN_NAMES } from "../chains/index.js";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(100),
   accountId: z.string().regex(/^\d{10}$/).optional(),
   address: z.string().trim().min(1).max(120).optional(),
-  chain: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]).optional(),
+  chain: z.enum(CHAIN_NAMES).optional(),
 });
 
 export const contactController = {

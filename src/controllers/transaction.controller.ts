@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { transactionService } from "../services/transaction/transaction.service.js";
 import { successResponse, errorResponse, handleError } from "../utils/apiResponse.js";
-import type { ChainName } from "../chains/index.js";
+import { CHAIN_NAMES, type ChainName } from "../chains/index.js";
 import { z } from "zod";
 
 const sendSchema = z.object({
@@ -9,7 +9,7 @@ const sendSchema = z.object({
   recipientAddress: z.string().trim().min(1).max(120).optional(),
   asset: z.string().trim().min(1).max(20),
   amount: z.string().regex(/^\d+(\.\d+)?$/, "Amount must be a positive decimal").refine((value) => Number(value) > 0, "Amount must be greater than zero"),
-  network: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]),
+  network: z.enum(CHAIN_NAMES),
   // Authorization PIN, verified server-side against the stored hash before
   // any transaction is created. Format-only here; the lockout service owns
   // the actual comparison so failures are counted centrally.
@@ -30,7 +30,7 @@ export const transactionController = {
         recipientAddress: z.string().trim().min(1).max(120),
         asset: z.string().trim().min(1).max(20),
         amount: z.string().regex(/^\d+(\.\d+)?$/),
-        network: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]),
+        network: z.enum(CHAIN_NAMES),
       }).parse(request.body);
       return reply.send(successResponse(await transactionService.estimateFee({ senderId: request.userId!, ...body })));
     } catch (err) {

@@ -2,11 +2,11 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { verifyAddressExists } from "../blockchain/triverify.js";
 import { errorResponse, successResponse } from "../utils/apiResponse.js";
-import type { ChainName } from "../chains/index.js";
+import { CHAIN_NAMES, type ChainName } from "../chains/index.js";
 
 const validationSchema = z.object({
   address: z.string().trim().min(1).max(120),
-  chain: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]),
+  chain: z.enum(CHAIN_NAMES),
 });
 
 export const validationController = {

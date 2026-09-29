@@ -2,13 +2,14 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { accountService } from "../services/account/account.service.js";
 import { successResponse, handleError } from "../utils/apiResponse.js";
 import { z } from "zod";
+import { CHAIN_NAMES } from "../chains/index.js";
 
 const settingsSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   photoUrl: z.string().url().max(500).optional(),
   defaultCurrency: z.string().trim().length(3).toUpperCase().optional(),
   defaultLanguage: z.string().trim().min(2).max(10).optional(),
-  defaultNetwork: z.enum(["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"]).optional(),
+  defaultNetwork: z.enum(CHAIN_NAMES).optional(),
 }).strict();
 
 export const accountController = {

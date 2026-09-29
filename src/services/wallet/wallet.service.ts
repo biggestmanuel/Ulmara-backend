@@ -1,8 +1,10 @@
 import { prisma } from "../../config/database.js";
-import { getChainAdapter, type ChainName } from "../../chains/index.js";
+import { getChainAdapter, CHAIN_NAMES, type ChainName } from "../../chains/index.js";
 import { logger } from "../../config/logger.js";
 
-const SUPPORTED_CHAINS: ChainName[] = ["ETH", "BSC", "BASE", "POLYGON", "TRON", "SOL", "TON", "BTC"];
+// The client (lib/registerWallets.ts) sends exactly these uppercase wire
+// identifiers for POST /api/wallet/register.
+const SUPPORTED_CHAINS: ChainName[] = [...CHAIN_NAMES];
 
 export const walletService = {
   async getBalances(userId: string) {

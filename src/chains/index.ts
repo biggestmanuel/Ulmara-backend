@@ -2,6 +2,12 @@ import type { ChainAdapter } from "./chain.types.js";
 
 export type ChainName = "TON" | "BSC" | "ETH" | "SOL" | "BASE" | "POLYGON" | "TRON" | "BTC";
 
+// Single source of truth for the wire-format chain identifier. Every zod
+// schema that accepts a chain/network from a client MUST derive its enum
+// from this array (see controllers/*.ts), and clients must send exactly
+// these uppercase values. Kept in sync with the Prisma `Chain` enum.
+export const CHAIN_NAMES = ["TON", "BSC", "ETH", "SOL", "BASE", "POLYGON", "TRON", "BTC"] as const;
+
 // Lazy-loaded to avoid pulling in every chain SDK at server boot
 const loaders: Record<ChainName, () => Promise<ChainAdapter>> = {
   TON: async () => (await import("./ton/index.js")).tonAdapter,
