@@ -72,10 +72,30 @@ jobs:
       # redis:7-alpine (AOF off), so the durability assertions would be
       # meaningless here — they are covered by `npm run verify:redis` against the
       # compose-managed local instance.
+      - name: Install redis-cli for the preflight
+        # The ubuntu-latest runner image does not ship redis-tools, so the
+        # preflight below failed with "cannot reach Redis" while the service
+        # container was healthy and every test had already passed. redis-cli was
+        # never installed — the server was not missing.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq redis-tools
+
       - name: Redis preflight (eviction policy)
         env:
           REQUIRE_REDIS_CONTAINER: "false"
         run: npm run preflight:redis
+
+      - name: Prove the app works against a TLS + ACL Redis
+        # A `rediss://` URL is a claim nothing else tests, and a managed Redis is
+        # where three separate things break: the pub/sub channel grant is a
+        # different ACL namespace from the key grant, a private CA needs
+        # NODE_EXTRA_CA_CERTS set before the process starts, and the username in
+        # the URL is mandatory. All three fail while a health check stays green.
+        #
+        # Self-contained: it starts its own throwaway Redis on 6380 with the
+        # plaintext port disabled and `user default off`, generates its own
+        # throwaway CA, and tears both down. It does not touch the service Redis
+        # above; the separate compose file keeps it out of the default project.
+        run: npm run verify:redis:tls
 
   migrations:
     name: Migration drift check

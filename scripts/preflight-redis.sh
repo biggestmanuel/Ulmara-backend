@@ -38,9 +38,28 @@ printf '=== Redis preflight ===\n'
 printf '  REDIS_URL               : %s\n' "$URL"
 printf '  REQUIRE_REDIS_CONTAINER : %s\n' "$REQUIRE_CONTAINER"
 
+# --- is the client even present? ---------------------------------------------
+# Distinguished from "Redis is unreachable" on purpose. These are very different
+# problems with very different fixes, and collapsing them into one message sent
+# CI after a green test run against a perfectly healthy service container: the
+# GitHub runner image has no redis-cli, and `redis-cli ... >/dev/null 2>&1`
+# reported "command not found" as if the server were down.
+if ! command -v redis-cli >/dev/null 2>&1; then
+  fatal "redis-cli is not installed, so this preflight cannot run.
+       Install redis-tools (Debian/Ubuntu: sudo apt-get install -y redis-tools),
+       or drop the preflight step."
+fi
+
 # --- reachable? -------------------------------------------------------------
-if ! redis-cli -u "$URL" ping >/dev/null 2>&1; then
-  fatal "cannot reach Redis at $URL (is it running? try: docker compose up -d)"
+# The reply is checked, not just the exit code. `redis-cli` can exit non-zero for
+# a wrong password while a healthy server is right there, and "cannot reach" is
+# the wrong diagnosis for that.
+if ! ping_out="$(redis-cli -u "$URL" ping 2>&1)"; then
+  printf '  redis-cli said          : %s\n' "$(printf '%s' "$ping_out" | head -1)" >&2
+  fatal "cannot PING Redis at $URL (is it running? try: docker compose up -d)"
+fi
+if [ "$(printf '%s' "$ping_out" | tr -d '\r')" != "PONG" ]; then
+  fatal "expected PONG from $URL, got: $(printf '%s' "$ping_out" | head -1)"
 fi
 printf '  PING                    : PONG\n'
 
