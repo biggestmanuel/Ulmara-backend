@@ -1,11 +1,18 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
+import { strictObject } from "../utils/requestSchemas.js";
 import { authService } from "../services/auth/auth.service.js";
 import { successResponse, handleError } from "../utils/apiResponse.js";
+import { idParamSchema } from "../utils/requestSchemas.js";
 
 // Signup/login are the most-abused endpoints; keep the shared global limit
 // from app.ts but nothing stricter here for now.
-const signupSchema = z.object({
+// `strictObject` (src/utils/requestSchemas.ts) rejects unknown keys: a typo such
+// as `network` for `chain`, or a field from an older client, must be a 400
+// rather than a silently dropped value. It is used instead of zod v4's
+// `.strict()` because that method does not type-check on the inferred
+// object type in this project.
+const signupSchema = strictObject({
   email: z.string().trim().toLowerCase().email("Enter a valid email address"),
   phone: z
     .string()
@@ -15,31 +22,40 @@ const signupSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters").max(128),
 });
 
-const loginSchema = z.object({
+const loginSchema = strictObject({
   email: z.string().trim().toLowerCase().email("Enter a valid email address"),
   password: z.string().min(1, "Password is required"),
 });
 
-const verifySchema = z.object({
-  userId: z.string().uuid("Invalid user reference"),
+/**
+ * Verification bodies carry ONLY the code.
+ *
+ * These routes are authenticated (`requireAuth` sets `request.userId` from the
+ * session token), and the account being verified is therefore the caller's own.
+ * The schema used to accept a body-supplied `userId` and the service used it
+ * directly, so an authenticated caller could complete verification, or burn
+ * another user's resend budget, for an arbitrary account id. The identity now
+ * comes only from the verified session, which is also what makes the per-user
+ * rate limit meaningful.
+ */
+const verifySchema = strictObject({
   code: z.string().regex(/^\d{6}$/, "Verification code must be 6 digits"),
 });
 
-const resendSchema = z.object({
-  userId: z.string().uuid("Invalid user reference"),
+const resendSchema = strictObject({
   channel: z.enum(["email", "phone"]),
 });
 
-const pinSchema = z.object({
+const pinSchema = strictObject({
   pin: z.string().regex(/^\d{6}$/, "PIN must be 6 digits"),
 });
 
-const changePinSchema = z.object({
+const changePinSchema = strictObject({
   currentPin: z.string().regex(/^\d{6}$/, "Current PIN must be 6 digits"),
   newPin: z.string().regex(/^\d{6}$/, "New PIN must be 6 digits"),
 });
 
-const forgotPasswordSchema = z.object({
+const forgotPasswordSchema = strictObject({
   email: z.string().trim().toLowerCase().email("Enter a valid email address"),
 });
 
@@ -69,7 +85,7 @@ export const authController = {
   async verifyEmail(request: FastifyRequest, reply: FastifyReply) {
     try {
       const body = verifySchema.parse(request.body);
-      const result = await authService.verifyEmail(body);
+      const result = await authService.verifyEmail({ ...body, userId: request.userId! });
       return reply.code(200).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);
@@ -79,7 +95,7 @@ export const authController = {
   async verifyPhone(request: FastifyRequest, reply: FastifyReply) {
     try {
       const body = verifySchema.parse(request.body);
-      const result = await authService.verifyPhone(body);
+      const result = await authService.verifyPhone({ ...body, userId: request.userId! });
       return reply.code(200).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);
@@ -89,7 +105,7 @@ export const authController = {
   async resendCode(request: FastifyRequest, reply: FastifyReply) {
     try {
       const body = resendSchema.parse(request.body);
-      const result = await authService.resendVerificationCode(body.userId, body.channel);
+      const result = await authService.resendVerificationCode(request.userId!, body.channel);
       return reply.code(200).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);
@@ -151,7 +167,7 @@ export const authController = {
     try {
       const authHeader = request.headers.authorization!;
       const currentToken = authHeader.slice(7);
-      const { id } = request.params as { id: string };
+      const { id } = idParamSchema.parse(request.params);
       const result = await authService.revokeSession(request.userId!, id, currentToken);
       return reply.code(200).send(successResponse(result));
     } catch (err) {

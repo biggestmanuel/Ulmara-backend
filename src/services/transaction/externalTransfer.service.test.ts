@@ -196,7 +196,7 @@ import { prisma } from "../../config/database.js";
 import { env } from "../../config/env.js";
 import { verifyAddressExists } from "../../blockchain/triverify.js";
 import { transactionQueue } from "../../queues/transaction.queue.js";
-import { pinLockoutService, PIN_LOCKOUT_MS } from "../auth/pinLockout.service.js";
+import { pinLockoutService } from "../auth/pinLockout.service.js";
 import { externalTransferService } from "./externalTransfer.service.js";
 
 const CORRECT_PIN = "111111";

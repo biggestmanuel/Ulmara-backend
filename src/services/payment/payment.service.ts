@@ -39,7 +39,7 @@ export const paymentService = {
     if (request.userId === payerId) throw Object.assign(new Error("A payment request cannot be fulfilled by its owner"), { statusCode: 400 });
     const ownerAccount = await prisma.accountId.findUnique({ where: { userId: request.userId } });
     const transaction = await prisma.transaction.findFirst({ where: { id: transactionId, senderId: payerId } });
-    if (!transaction || transaction.status !== "COMPLETED") {
+    if (transaction?.status !== "COMPLETED") {
       throw Object.assign(new Error("A completed transaction from the payer is required"), { statusCode: 400 });
     }
     if (transaction.recipientAccountId !== ownerAccount?.accountId || transaction.asset !== request.asset ||

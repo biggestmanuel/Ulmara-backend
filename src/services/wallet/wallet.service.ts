@@ -1,5 +1,6 @@
 import { prisma } from "../../config/database.js";
 import { getChainAdapter, CHAIN_NAMES, type ChainName } from "../../chains/index.js";
+import type { ChainAdapter } from "../../chains/chain.types.js";
 import { logger } from "../../config/logger.js";
 
 // The client (lib/registerWallets.ts) sends exactly these uppercase wire
@@ -7,25 +8,72 @@ import { logger } from "../../config/logger.js";
 const SUPPORTED_CHAINS: ChainName[] = [...CHAIN_NAMES];
 
 export const walletService = {
+  /**
+   * Balances for every registered wallet: the native gas asset plus every
+   * ERC-20 token configured for that chain's CURRENT network.
+   *
+   * Each balance is independent — a token RPC failure reports that token as
+   * unavailable rather than hiding the native balance, and one unavailable
+   * chain never hides the others.
+   */
   async getBalances(userId: string) {
     const wallets = await prisma.wallet.findMany({ where: { userId } });
 
-    // A missing chain provider is reported per wallet so one unavailable RPC
-    // does not hide balances from the other configured networks.
     const results = await Promise.all(
       wallets.map(async (wallet) => {
         try {
-          const adapter = await getChainAdapter(wallet.chain as ChainName);
-          const balance = await adapter.getBalance(wallet.address);
-          return { chain: wallet.chain, address: wallet.address, balance };
+          const adapter = await getChainAdapter(wallet.chain);
+          const native = await adapter.getBalance(wallet.address);
+          const tokens = await this.getTokenBalances(adapter, wallet.chain, wallet.address);
+          return { chain: wallet.chain, address: wallet.address, balance: native, tokens };
         } catch (err) {
           logger.warn({ chain: wallet.chain, err }, "Chain balance provider unavailable");
-          return { chain: wallet.chain, address: wallet.address, balance: null };
+          return { chain: wallet.chain, address: wallet.address, balance: null, tokens: [] };
         }
       })
     );
 
     return results;
+  },
+
+  /** Per-token balances; a failing token is reported, never thrown. */
+  async getTokenBalances(adapter: ChainAdapter, chain: ChainName, address: string) {
+    const configured = adapter.listTokens?.() ?? [];
+    if (configured.length === 0 || !adapter.getTokenBalance) return [];
+    return Promise.all(
+      configured.map(async (token) => {
+        try {
+          const balance = await adapter.getTokenBalance!(address, token.symbol);
+          return {
+            symbol: token.symbol,
+            name: token.name,
+            decimals: token.decimals,
+            address: token.address,
+            balance,
+          };
+        } catch (err) {
+          logger.warn({ chain, token: token.symbol, err }, "Token balance provider unavailable");
+          return {
+            symbol: token.symbol,
+            name: token.name,
+            decimals: token.decimals,
+            address: token.address,
+            balance: null,
+          };
+        }
+      }),
+    );
+  },
+
+  /** Token metadata for a chain — lets a client render only valid assets. */
+  async listSupportedTokens(chain: ChainName) {
+    const adapter = await getChainAdapter(chain);
+    return (adapter.listTokens?.() ?? []).map((token) => ({
+      symbol: token.symbol,
+      name: token.name,
+      decimals: token.decimals,
+      address: token.address,
+    }));
   },
 
   async getAddresses(userId: string) {
