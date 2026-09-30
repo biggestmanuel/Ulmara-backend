@@ -299,8 +299,9 @@ production requirements, and because items 4–7 are still open.
    locally.
 5. **Enable TLS and authentication** in production (`rediss://` and a password
    or ACL user). The dev URL is plaintext on loopback only.
-   ⛔ still open — same reason. The compose file states this explicitly in a
-   comment so the dev instance is not mistaken for a production posture.
+   ✅ the **application is verified to work** against TLS + ACL — see
+   "Managed Redis: TLS and ACL" below. What remains open is only *provisioning*
+   such an instance, which needs an external account and spend.
 6. **Do not run the OTP store and BullMQ on a Redis instance configured for
    eviction**, for the reason above — the OTP keys are the same class of data.
 7. **Back up nothing yourself** for Redis: the queue is reconstructible from the
@@ -313,6 +314,76 @@ production requirements, and because items 4–7 are still open.
 9. **Single-node Redis cannot survive a host loss.** The compose volume protects
    against a *container* restart or recreate only. It is not a backup, and it is
    not shared storage — see item 7.
+
+### Managed Redis: TLS and ACL
+
+A `rediss://` URL in `.env` is a claim. `npm run verify:redis:tls` tests it
+against a real TLS-only, ACL-protected Redis it starts on port 6380, isolated
+from the development instance, and reports what actually works.
+
+**Run it:** `npm run verify:redis:tls`
+
+It stands up `docker-compose.tls-redis.yml` with the plaintext port disabled
+outright (`--port 0`), `user default off`, and an app user scoped to the app's
+real key space, then checks 9 things including the two that matter most:
+
+- the **real OTP suite** (16 tests: `EX` TTL, Lua) run against `rediss://` with
+  the ACL user — not a smoke test, the operations verification codes depend on;
+- a **published WebSocket event actually delivered** to a subscriber over TLS,
+  because a connection that dials successfully but delivers nothing is invisible
+  to a health check.
+
+#### Three findings that a plaintext dev Redis cannot surface
+
+**1. Pub/sub channels are a separate ACL namespace from keys.** Redis 7 scopes
+channels with `&pattern`, not `~pattern`. A user granted `~ulmara:*` has access
+to *no channels at all*, so `src/websocket/emit.ts` fails with `NOPERM No
+permissions to access a channel` — and the API still passes every health check
+while cross-process WebSocket events silently stop arriving. The user needs both:
+
+```
+~ulmara:* ~bull:*      # keys:      OTP codes, BullMQ
+&ulmara:* &bull:*      # channels:  WebSocket user events
+```
+
+**2. `rediss://` alone is not enough for a private CA.** With a provider-issued
+or self-signed certificate and no trusted CA, the connection is refused with
+`unable to verify the first certificate`. Fixes, both verified:
+
+- set `NODE_EXTRA_CA_CERTS` in the process environment — **it must be set before
+  the process starts.** Node builds and caches its TLS trust store on first use,
+  so assigning it from inside a running process silently does nothing. Testing it
+  in-process would wrongly conclude the variable is useless.
+- or use a publicly-trusted certificate, where no extra configuration is needed.
+
+There is no application code path for a custom CA; every Redis connection is
+`new Redis(env.REDIS_URL)` with no options. That is adequate for a publicly
+trusted endpoint and for the `NODE_EXTRA_CA_CERTS` route, and is called out here
+because it is a real constraint when choosing a provider.
+
+**3. The username in the URL is required.** `redis://:password@host` authenticates
+as `default`, which a managed instance normally disables. The ACL user must be
+named, and the app's Redis key space is exactly `ulmara:*` and `bull:*` — the PIN
+lockout lives in Postgres and the rate limiter in process memory, so nothing else
+needs a grant.
+
+#### What the app user must be granted
+
+`npm run verify:redis:tls` uses this ACL, and every line is justified by a check
+it runs:
+
+| Grant | Why |
+| --- | --- |
+| `~ulmara:* ~bull:*` | OTP codes (`ulmara:otp:<channel>:<userId>`), BullMQ keys |
+| `&ulmara:* &bull:*` | `WS_PUBSUB_CHANNEL` = `ulmara:ws:user-events` |
+| `+@all -@admin -@dangerous` | data commands, but not server administration |
+| `-config -acl -flushall -flushdb` | no config reads, no ACL self-inspection, no wiping |
+| `+acl\|whoami` | read-only; lets the harness prove `AUTH user pass` is sent |
+| `+client\|setname +client\|setinfo` | ioredis sends these on connect |
+
+`CONFIG`, `ACL LIST`, `SET` from another user, and any key outside the two
+prefixes are each asserted to be **denied**, so the ACL is proven restrictive
+rather than assumed to be.
 
 ### OTP codes in Redis
 
