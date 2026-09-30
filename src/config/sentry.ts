@@ -88,10 +88,27 @@ export function initSentry(): void {
   );
 }
 
-const SENSITIVE_KEY = /(pin|password|passcode|secret|token|authorization|cookie|mnemonic|seed|privatekey|private_key|jwt|session|apikey|api_key|dsn)/i;
+const SENSITIVE_KEY = /(pin|password|passcode|secret|token|authorization|cookie|mnemonic|seed|privatekey|private_key|jwt|session|apikey|api_key|dsn|databaseurl|database_url|connectionstring|connection_string|credential)/i;
 
-/** Anything whose key suggests a credential is replaced with a marker. */
+/**
+ * Credentials embedded in a *value* rather than announced by a key.
+ *
+ * Key matching alone is not enough, and the gap is not hypothetical: Prisma
+ * puts the full datasource URL — password included — into its error messages
+ * ("error: Authentication failed against database server at
+ * `postgresql://user:secret@host/db`"), and a database URL surfaces under
+ * ordinary-looking keys too (`env`, `config`, `context`). Redacting the whole
+ * value would be useless, so the userinfo is replaced and the rest of the URL
+ * is kept: knowing *which* host failed is exactly the diagnostic value.
+ */
+const CREDENTIAL_IN_VALUE = /([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]*)@/gi;
+
 const REDACTED = "[redacted]";
+
+/** Strips `user:password@` out of any URL-shaped substring, keeping the host. */
+function redactCredentialsInString(value: string): string {
+  return value.replace(CREDENTIAL_IN_VALUE, (_match, scheme: string, user: string) => `${scheme}${user}:${REDACTED}@`);
+}
 
 /**
  * Defence in depth: even if a caller passes a sensitive field into a Sentry
@@ -103,13 +120,19 @@ export function scrubSentryEvent<T>(event: T): T {
     if (depth > 6) return "[truncated]";
     if (value === null || value === undefined) return value;
     if (typeof value === "string") {
-      return value.length > 512 ? `${value.slice(0, 512)}...[truncated]` : value;
+      const redacted = redactCredentialsInString(value);
+      return redacted.length > 512 ? `${redacted.slice(0, 512)}...[truncated]` : redacted;
     }
     if (Array.isArray(value)) return value.slice(0, 50).map((item) => walk(item, depth + 1));
     if (value instanceof Error) {
       // Keep name/message/stack but never attach custom enumerable props that
-      // might carry request bodies.
-      return { name: value.name, message: value.message, stack: value.stack };
+      // might carry request bodies. The message still goes through redaction:
+      // that is precisely where Prisma puts the datasource URL.
+      return {
+        name: redactCredentialsInString(value.name),
+        message: redactCredentialsInString(value.message),
+        stack: value.stack ? redactCredentialsInString(value.stack) : value.stack,
+      };
     }
     if (typeof value === "object") {
       const out: Record<string, unknown> = {};

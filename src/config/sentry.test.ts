@@ -190,6 +190,57 @@ describe("scrubSentryEvent", () => {
     expect(JSON.stringify(scrubbed)).not.toContain("leaky");
   });
 
+  // Found by `npm run verify:providers`, which asserted a real canary object
+  // against the live scrubber: a Prisma connection string survived because the
+  // key was `databaseUrl` and the key regex did not match it.
+  it("redacts a database connection string announced by its key", () => {
+    const out = secretish({ databaseUrl: "postgresql://avora:hunter2@ep-cool.us-east-2.aws.neon.tech/avora" });
+    expect(out).not.toContain("hunter2");
+    expect(out).toContain("[redacted]");
+  });
+
+  it.each(["database_url", "DATABASEURL", "connectionString", "connection_string", "credentials"])(
+    "redacts the connection-string key %s in any casing",
+    (key) => {
+      expect(secretish({ [key]: "postgresql://avora:hunter2@host/db" })).not.toContain("hunter2");
+    },
+  );
+
+  // The worse vector: no key announces anything, and the URL arrives inside a
+  // Prisma error message, which is exactly how the real leak would occur.
+  it("strips the password out of a URL embedded in a value, keeping the host", () => {
+    // No cast needed: scrubSentryEvent is generic over its argument, so the
+    // inferred type already carries `env: string`.
+    const out = scrubSentryEvent({
+      env: "DATABASE_URL=postgresql://avora:hunter2@ep-cool.us-east-2.aws.neon.tech/avora?sslmode=require",
+    });
+    expect(out.env).not.toContain("hunter2");
+    // The host is the diagnostic value and must survive.
+    expect(out.env).toContain("ep-cool.us-east-2.aws.neon.tech");
+    expect(out.env).toContain("sslmode=require");
+  });
+
+  it("redacts credentials inside an Error message and stack", () => {
+    const err = new Error("Authentication failed against `postgresql://avora:hunter2@host/db`");
+    const scrubbed = scrubSentryEvent({ err }) as unknown as { err: Record<string, unknown> };
+    expect(scrubbed.err.message).not.toContain("hunter2");
+    expect(scrubbed.err.message).toContain("host");
+  });
+
+  it("redacts every URL in a multi-URL string, not just the first", () => {
+    const out = secretish({
+      note: "a=postgresql://u:one@h1/db b=postgres://v:two@h2/db c=no-credentials-here",
+    });
+    expect(out).not.toContain("one@");
+    expect(out).not.toContain("two@");
+    expect(out).toContain("no-credentials-here");
+  });
+
+  it("leaves a credential-free URL untouched", () => {
+    const url = "https://api.example.com/v1/orders?limit=10";
+    expect(secretish({ next: url })).toContain(url);
+  });
+
   it("stops recursing on deeply nested structures", () => {
     let deep: Record<string, unknown> = { leaf: true };
     for (let i = 0; i < 30; i++) deep = { nested: deep };
