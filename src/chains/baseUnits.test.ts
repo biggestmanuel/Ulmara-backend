@@ -152,8 +152,11 @@ describe("Solana adapter converts lamports exactly", () => {
     expect(await solanaAdapter.getBalance(SOL_ADDR_A, "SOL")).toBe("1.5");
   });
 
-  it("still rejects a real token symbol as unimplemented", async () => {
-    await expect(solanaAdapter.getBalance(SOL_ADDR_A, "USDC")).rejects.toThrow(/not implemented/);
+  it("still rejects a token that is not configured at all", async () => {
+    // Not-implemented is gone; genuinely-unsupported is not. (The positive SPL
+    // path needs the real PublicKey, so it is covered in spl.adapter.test.ts
+    // rather than against this file's deliberately partial SDK mock.)
+    await expect(solanaAdapter.getBalance(SOL_ADDR_A, "NOTAREALTOKEN")).rejects.toThrow(/Unsupported SPL token/);
   });
 });
 

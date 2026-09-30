@@ -21,6 +21,7 @@
     "verify:tokens": "tsx scripts/verify-token-registry.ts",
     "preflight:redis": "bash scripts/preflight-redis.sh",
     "verify:redis": "bash scripts/verify-redis-persistence.sh",
+    "verify:solana": "tsx scripts/verify-solana-spl.ts",
     "test:load": "bash scripts/run-load-tests.sh",
     "verify:all": "npm run lint && npm run typecheck && npm test",
     "postinstall": "prisma skills sync || exit 0"

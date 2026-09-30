@@ -62,7 +62,6 @@ const envSchema = z.object({
   // the usual case for a single nginx in front of the app.
   TRUSTED_PROXIES: z.string().default(""),
   TRUSTED_PROXY_COUNT: z.coerce.number().int().min(0).max(10).optional(),
-
   // --- EVM networks -------------------------------------------------------
   ETHEREUM_RPC_URL: z.string().url().optional(),
   // Sepolia (11155111) for the current dev/testnet pilot phase — the
@@ -78,6 +77,19 @@ const envSchema = z.object({
   BASE_RPC_URL: z.string().url().optional(),
   POLYGON_RPC_URL: z.string().url().optional(),
   SOLANA_RPC_URL: z.string().url().optional(),
+  // Which public Solana cluster SOLANA_RPC_URL points at: "devnet" or "mainnet".
+  // A mint address only means anything on the cluster it was issued on, so this
+  // is resolved explicitly rather than inferred silently. When unset it is
+  // inferred from the RPC URL, defaulting to devnet (the documented pilot
+  // target). See src/chains/solana/tokens.ts.
+  SOLANA_CLUSTER: z.enum(["devnet", "mainnet"]).optional(),
+  // JSON array of extra SPL tokens for the current cluster, e.g.
+  //   [{"symbol":"USDT","name":"Tether USD","decimals":6,
+  //     "address":"<base58 mint>","program":"spl-token"}]
+  // Same contract as ERC20_TOKEN_CONFIG: malformed entries are dropped with a
+  // warning rather than taking the API down, and the verified seeds still apply.
+  // `npm run verify:solana` proves each entry against the chain.
+  SOLANA_SPL_TOKENS: z.string().optional(),
   TRON_RPC_URL: z.string().url().optional(),
   TON_RPC_URL: z.string().url().optional(),
   BTC_RPC_URL: z.string().url().optional(),
