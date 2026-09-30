@@ -111,17 +111,36 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
 
-      - name: Assert schema and migrations agree (no un-migrated drift)
-        run: |
-          # --exit-code makes an empty diff return 0 and a NON-empty diff
-          # return 1, so a schema change with no matching migration fails here.
-          npx prisma migrate diff \
-            --from-migrations prisma/migrations \
-            --to-schema prisma/schema.prisma \
-            --exit-code
-
       - name: Apply every migration to an empty database
         run: npx prisma migrate deploy
 
       - name: Status must be up to date after deploy
         run: npx prisma migrate status
+
+      - name: Assert schema and migrations agree (no un-migrated drift)
+        run: |
+          # The diff runs AFTER `migrate deploy`, and reads the live database via
+          # --from-config-datasource rather than the migrations directory.
+          #
+          # The obvious form is wrong under Prisma 7:
+          #
+          #     npx prisma migrate diff --from-migrations prisma/migrations ...
+          #
+          # which fails with "You must set `datasource.shadowDatabaseUrl` in your
+          # `prisma.config.ts` if you want to diff a migrations directory". This
+          # project has no shadow database configured, so that invocation ABORTS
+          # INSTEAD OF DIFFING — the step fails, but it fails for the wrong reason
+          # and would not have reported the drift it exists to catch. It was green
+          # only because this job had never run.
+          #
+          # The service container above is a fresh, empty PostgreSQL that has been
+          # migrated from nothing but prisma/migrations, so diffing the live schema
+          # against the datamodel asks the same question: does the set of
+          # migrations produce the declared schema?
+          #
+          # --exit-code makes an empty diff return 0 and a NON-empty diff return
+          # non-zero, so a schema change with no matching migration fails here.
+          npx prisma migrate diff \
+            --from-config-datasource \
+            --to-schema prisma/schema.prisma \
+            --exit-code

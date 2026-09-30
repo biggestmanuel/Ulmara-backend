@@ -1,0 +1,28 @@
+-- Add the index that prisma/schema.prisma has declared on RampTransaction.status
+-- since the initial migration, but which no migration ever created.
+--
+-- Found by `npm run verify:migrations`, which diffs the migrated database against
+-- prisma/schema.prisma and reported:
+--
+--     [*] Changed the `RampTransaction` table
+--       [+] Added index on columns (status)
+--
+-- So this is not a speculative change: the schema has been claiming an index the
+-- database never had. Every query that filters or orders ramp transactions by
+-- status — the ramp list endpoints and the provider-webhook reconciliation path —
+-- has been running a sequential scan on a table that grows without bound.
+--
+-- `CREATE INDEX`, not `CREATE UNIQUE INDEX`: status is an enum-like TEXT, so many
+-- rows legitimately share a value, and the declaration in schema.prisma is
+-- `@@index([status])`.
+--
+-- CONCURRENTLY would avoid locking writes, but it cannot run inside a transaction
+-- and Prisma Migrate runs each migration in one. The table is small today and this
+-- is a one-off catch-up; if it ever grows hot, build the index manually with
+-- CREATE INDEX CONCURRENTLY and record the migration as applied with
+-- `prisma migrate resolve --applied`.
+--
+-- Apply with: npx prisma migrate deploy
+
+-- CreateIndex
+CREATE INDEX "RampTransaction_status_idx" ON "RampTransaction"("status");
