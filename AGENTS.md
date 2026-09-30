@@ -23,6 +23,7 @@ After coding:
 - If something fails, investigate the real root cause — do not hide, suppress, or work around a failure without understanding it
 - If you find a better approach than what was asked, flag it with trade-offs instead of silently changing direction
 - If a task is ambiguous or conflicts with existing architecture, stop and ask rather than guessing
+- Test in a **release build** first — rule out dev-mode overhead.
 
 ## Verification standard
 Every claim of "done" or "working" must be backed by actual test output, not assumption. Report exact test pass/fail counts, not just "tests pass." If you cannot verify something (e.g. no live server/DB in this environment), say so explicitly rather than describing untested code as verified.
