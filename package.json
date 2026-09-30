@@ -5,13 +5,24 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server/server.ts",
+    "dev:worker": "tsx watch src/worker/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server/server.js",
+    "start:worker": "node dist/worker/index.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:status": "prisma migrate status",
     "prisma:studio": "prisma studio",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "verify:tokens": "tsx scripts/verify-token-registry.ts",
+    "preflight:redis": "bash scripts/preflight-redis.sh",
+    "verify:redis": "bash scripts/verify-redis-persistence.sh",
+    "test:load": "bash scripts/run-load-tests.sh",
+    "verify:all": "npm run lint && npm run typecheck && npm test",
     "postinstall": "prisma skills sync || exit 0"
   },
   "dependencies": {
@@ -21,6 +32,7 @@
     "@fastify/websocket": "^11.3.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
+    "@sentry/node": "^11.1.0",
     "@solana/web3.js": "^1.99.0",
     "@ton/core": "^0.63.1",
     "@ton/crypto": "^3.3.0",
@@ -40,12 +52,23 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^26.4.0",
+    "@types/ws": "^8.18.2",
+    "eslint": "^9.39.5",
+    "globals": "^16.5.0",
     "prisma": "^7.10.0",
     "tsx": "^4.23.13",
-    "typescript": "^7.0.2",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.0",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "axios": "^1.20.0",
+    "deepmerge-ts": "^8.0.2",
+    "jayson": "^5.0.0",
+    "mysql2": "^3.24.5"
   }
 }

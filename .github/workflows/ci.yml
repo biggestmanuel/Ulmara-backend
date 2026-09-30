@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   test:
-    name: Typecheck & test
+    name: Lint, typecheck & test
     runs-on: ubuntu-latest
     # config/env.ts and prisma7.config.ts resolve these at load time (even
     # `prisma generate` needs DATABASE_URL), yet every DB/Redis touchpoint in
@@ -21,7 +21,20 @@ jobs:
     env:
       DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
       REDIS_URL: redis://localhost:6379
-      JWT_SECRET: ci-only-secret-not-used-for-anything-real
+      JWT_SECRET: ci-only-secret-not-used-for-anything-real-32
+    services:
+      # The OTP store is a real Redis integration suite (EX TTL, Lua
+      # compare-and-delete, Lua attempt counter). A stub would not exercise
+      # those, so CI runs a real Redis and the tests are not skipped.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -38,8 +51,77 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
+      # ESLint's type-aware rules need the same env the app does, otherwise
+      # config/env.ts throws on import and every file fails to parse.
+      - name: Lint
+        run: npm run lint
+
       - name: Typecheck
         run: npm run typecheck
 
       - name: Test
         run: npm test
+
+      # A redis-server started outside the container silently shadows it for
+      # anything running in this environment, and nothing about that looks like
+      # a failure: PING answers, keys are there, the suite passes. This asserts
+      # the eviction policy, because a policy that can evict job keys is the one
+      # misconfiguration that would actually lose a queued transfer.
+      #
+      # REQUIRE_REDIS_CONTAINER=false: the CI service container is a bare
+      # redis:7-alpine (AOF off), so the durability assertions would be
+      # meaningless here — they are covered by `npm run verify:redis` against the
+      # compose-managed local instance.
+      - name: Redis preflight (eviction policy)
+        env:
+          REQUIRE_REDIS_CONTAINER: "false"
+        run: npm run preflight:redis
+
+  migrations:
+    name: Migration drift check
+    runs-on: ubuntu-latest
+    # Guards the release contract in README/OPERATIONS.md: a migration must
+    # exist for every schema change, and it must apply cleanly to an empty
+    # database. A schema edit that ships without a migration fails here rather
+    # than in production.
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/migrate
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: migrate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npx prisma generate
+
+      - name: Assert schema and migrations agree (no un-migrated drift)
+        run: |
+          # --exit-code makes an empty diff return 0 and a NON-empty diff
+          # return 1, so a schema change with no matching migration fails here.
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema prisma/schema.prisma \
+            --exit-code
+
+      - name: Apply every migration to an empty database
+        run: npx prisma migrate deploy
+
+      - name: Status must be up to date after deploy
+        run: npx prisma migrate status
