@@ -91,7 +91,7 @@ async function loginPinEndpoint(userId: string, pin: string): Promise<{ status: 
 }
 
 // Verbatim mirror of authService.changePin's current-PIN gate.
-async function changePinEndpoint(userId: string, currentPin: string, newPin: string): Promise<{ status: number; message?: string }> {
+async function changePinEndpoint(userId: string, currentPin: string, _newPin: string): Promise<{ status: number; message?: string }> {
   try {
     await pinLockoutService.assertPinAuthorized(userId, currentPin, "changePin");
     return { status: 200 };

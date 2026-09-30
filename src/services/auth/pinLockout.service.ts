@@ -79,6 +79,21 @@ export const pinLockoutService = {
       // A lockout that has already expired starts a fresh window: count from
       // zero instead of instantly re-locking on a stale counter.
       const expired = user.pinLockedUntil !== null && user.pinLockedUntil.getTime() <= Date.now();
+
+      // A lockout is CURRENTLY active. This attempt reached here only because
+      // it passed assertPinAuthorized's lock check before another request
+      // armed the lockout in the same burst. It must not advance the counter
+      // toward a *second* lockout, or a concurrent burst of N wrong PINs would
+      // walk the counter straight past the threshold and emit a second
+      // `pin_lockout_armed` event for one real lockout.
+      //
+      // Report the threshold so the caller answers 423 (locked out) rather
+      // than 401, which is the truthful response to an attempt made while a
+      // lockout is in force.
+      if (!expired && user.pinLockedUntil !== null) {
+        return PIN_MAX_ATTEMPTS;
+      }
+
       const current = expired ? 0 : raw;
       const next = current + 1;
       const isLockingAttempt = next >= PIN_MAX_ATTEMPTS;

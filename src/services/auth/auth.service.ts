@@ -1,15 +1,20 @@
 // Type declarations come from the dev-only @types/bcryptjs package
 // (bcryptjs 2.x does not bundle its own).
 import bcrypt from "bcryptjs";
-import jwt, { type SignOptions } from "jsonwebtoken";
+import { sessionExpiry, signSessionToken } from "../../config/jwt.js";
 import { prisma } from "../../config/database.js";
 import { env } from "../../config/env.js";
+import { logger } from "../../config/logger.js";
 import { HttpError } from "../../utils/apiResponse.js";
+import { isEmailProviderConfigured, trySendEmail } from "../email/index.js";
+import { ttlMinutes, verificationEmailBody, verificationEmailSubject } from "../email/templates.js";
 import {
   createVerificationCode,
   verifyVerificationCode,
+  type VerificationChannel,
 } from "./verificationCodeStore.js";
 import { pinLockoutService, lockedMessage } from "./pinLockout.service.js";
+import { isUniqueConstraintViolation } from "../../utils/prismaError.js";
 
 // Throwing is the service's way of signalling an expected failure with a
 // client-readable message + status; controllers map it onto the response.
@@ -19,23 +24,79 @@ function fail(statusCode: number, message: string): never {
 
 const SALT_ROUNDS = 12;
 
-function signSession(userId: string) {
-  return jwt.sign({ sub: userId }, env.JWT_SECRET, {
-    expiresIn: env.JWT_EXPIRES_IN as SignOptions["expiresIn"],
-  });
-}
-
-function sessionExpiry(): Date {
-  const match = /^(\d+)([smhd])$/.exec(env.JWT_EXPIRES_IN);
-  if (!match) return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  const value = Number(match[1]);
-  const multipliers = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
-  return new Date(Date.now() + value * multipliers[match[2] as keyof typeof multipliers]);
-}
-
 function sanitizeUser<T extends { passwordHash: string; pinHash: string | null }>(user: T) {
-  const { passwordHash, pinHash, ...safe } = user;
+  // `_`-prefixed so the deliberate omission of the credential columns is
+  // explicit at the destructuring site rather than looking like a dead read.
+  const { passwordHash: _passwordHash, pinHash: _pinHash, ...safe } = user;
   return safe;
+}
+
+/**
+ * True only in an explicitly non-production run with DEV_VERIFICATION_MODE on.
+ * In that case the code is additionally returned to the caller and written to
+ * the log so a developer can complete the flow without an email inbox. The
+ * production path never does either.
+ */
+function devVerificationEnabled(): boolean {
+  return env.DEV_VERIFICATION_MODE && env.NODE_ENV !== "production";
+}
+
+/**
+ * Issues a code and delivers it. Returns the raw code only in dev-verification
+ * mode; otherwise the caller never learns it.
+ *
+ * A provider failure is surfaced as a 503 rather than swallowed: silently
+ * "succeeding" would leave the user staring at a code that never arrived.
+ */
+async function issueAndDeliverCode(
+  userId: string,
+  email: string,
+  channel: VerificationChannel,
+): Promise<{ code: string; devCode?: string }> {
+  if (!isEmailProviderConfigured()) {
+    logger.error(
+      { event: "email_provider_unavailable", provider: env.EMAIL_PROVIDER, channel },
+      "Cannot deliver a verification code: the configured email provider has no credentials",
+    );
+    fail(503, "We could not send a verification code right now. Please try again shortly.");
+  }
+
+  const code = await createVerificationCode(userId, channel);
+
+  const { html, text } = verificationEmailBody(code, ttlMinutes());
+  const sent = await trySendEmail(email, verificationEmailSubject(code), html, text);
+  if (!sent) {
+    // Drop the code so a retry cannot be satisfied by a code that was never
+    // delivered, and so the wrong-code budget starts clean.
+    await createVerificationCode(userId, channel);
+    fail(502, "We could not send a verification code right now. Please try again shortly.");
+  }
+
+  logger.info(
+    { event: "verification_code_issued", userId, channel, expiresInMinutes: ttlMinutes() },
+    "Verification code issued and dispatched",
+  );
+
+  if (devVerificationEnabled()) {
+    logger.warn(
+      { event: "dev_verification_code", userId, channel, code },
+      "DEV_VERIFICATION_MODE is on: the verification code is in this log line and in the response",
+    );
+    return { code, devCode: code };
+  }
+  return { code };
+}
+
+/** Maps a store outcome onto the client-facing message. */
+function verificationFailure(outcome: string): never {
+  switch (outcome) {
+    case "expired":
+      return fail(400, "Verification code has expired. Request a new one.");
+    case "attempts_exhausted":
+      return fail(429, "Too many incorrect attempts. Request a new verification code.");
+    default:
+      return fail(400, "Invalid or expired verification code");
+  }
 }
 
 export const authService = {
@@ -65,13 +126,13 @@ export const authService = {
       // TOCTOU guard: a concurrent signup can claim the same email/phone between
       // the pre-checks above and this insert. Map the unique violation to a 409
       // instead of leaking a raw Prisma error as a 500.
-      if ((err as { code?: string })?.code === "P2002") {
+      if (isUniqueConstraintViolation(err)) {
         fail(409, "An account with this email or phone already exists. Try logging in instead.");
       }
       throw err;
     }
 
-    const token = signSession(user.id);
+    const token = signSessionToken(user.id);
     await prisma.session.create({
       data: {
         userId: user.id,
@@ -82,14 +143,19 @@ export const authService = {
       },
     });
 
-    const devVerificationCodes = env.DEV_VERIFICATION_MODE && env.NODE_ENV !== "production"
-      ? {
-          email: createVerificationCode(user.id, "email"),
-          phone: input.phone ? createVerificationCode(user.id, "phone") : undefined,
-        }
-      : undefined;
+    // Send the verification code. A delivery failure must not roll back the
+    // signup (the account exists and the user can retry from "Resend code"),
+    // but it is logged loudly and the code is omitted from the response.
+    const emailDispatch = await issueAndDeliverCode(user.id, user.email, "email").catch((err: unknown) => {
+      logger.error({ event: "signup_verification_email_failed", userId: user.id, err }, "Could not send the signup verification code");
+      return null;
+    });
 
-    return { user: sanitizeUser(user), token, ...(devVerificationCodes ? { devVerificationCodes } : {}) };
+    return {
+      user: sanitizeUser(user),
+      token,
+      ...(emailDispatch?.devCode ? { devVerificationCodes: { email: emailDispatch.devCode } } : {}),
+    };
   },
 
   async login(input: { email: string; password: string }, meta?: { userAgent?: string; ipAddress?: string }) {
@@ -99,7 +165,7 @@ export const authService = {
     const valid = await bcrypt.compare(input.password, user.passwordHash);
     if (!valid) fail(401, "Invalid email or password. Please check your details and try again.");
 
-    const token = signSession(user.id);
+    const token = signSessionToken(user.id);
     await prisma.session.create({
       data: {
         userId: user.id,
@@ -116,11 +182,13 @@ export const authService = {
     const user = await prisma.user.findUnique({ where: { id: input.userId } });
     if (!user) fail(404, "Account not found. Please sign up again.");
     if (user.emailVerified) return sanitizeUser(user); // idempotent
-    verifyVerificationCode(input.userId, "email", input.code);
+    const outcome = await verifyVerificationCode(input.userId, "email", input.code);
+    if (outcome !== "verified") verificationFailure(outcome);
     const updated = await prisma.user.update({
       where: { id: input.userId },
       data: { emailVerified: true },
     });
+    logger.info({ event: "email_verified", userId: input.userId }, "User email verified");
     return sanitizeUser(updated);
   },
 
@@ -129,11 +197,13 @@ export const authService = {
     if (!user) fail(404, "Account not found. Please sign up again.");
     if (!user.phone) fail(400, "No phone number is linked to this account.");
     if (user.phoneVerified) return sanitizeUser(user); // idempotent
-    verifyVerificationCode(input.userId, "phone", input.code);
+    const outcome = await verifyVerificationCode(input.userId, "phone", input.code);
+    if (outcome !== "verified") verificationFailure(outcome);
     const updated = await prisma.user.update({
       where: { id: input.userId },
       data: { phoneVerified: true },
     });
+    logger.info({ event: "phone_verified", userId: input.userId }, "User phone verified");
     return sanitizeUser(updated);
   },
 
@@ -148,7 +218,16 @@ export const authService = {
     if (channel === "phone" && (!user.phone || user.phoneVerified)) {
       fail(400, "Your phone number is already verified.");
     }
-    return { success: true, ...(env.DEV_VERIFICATION_MODE && env.NODE_ENV !== "production" ? { devCode: createVerificationCode(userId, channel) } : {}) };
+    if (channel === "phone" && !user.phone) {
+      fail(400, "No phone number is linked to this account.");
+    }
+    // Phone codes are not deliverable: no SMS provider is wired up yet, so
+    // refuse explicitly rather than creating a code nobody can receive.
+    if (channel === "phone") {
+      fail(501, "SMS verification is not available yet. Verify your email instead.");
+    }
+    const dispatched = await issueAndDeliverCode(userId, user.email, "email");
+    return { success: true, ...(dispatched.devCode ? { devCode: dispatched.devCode } : {}) };
   },
 
   // Always succeeds with the same shape so the endpoint can't be used to
@@ -253,7 +332,7 @@ export const authService = {
 
   async revokeSession(userId: string, sessionId: string, currentToken: string) {
     const session = await prisma.session.findUnique({ where: { id: sessionId } });
-    if (!session || session.userId !== userId) {
+    if (session?.userId !== userId) {
       fail(404, "Session not found");
     }
     if (session.token === currentToken) {
