@@ -5,5 +5,6 @@ import { contactController } from "../controllers/contact.controller.js";
 export function contactRoutes(app: FastifyInstance) {
   app.get("/", { preHandler: requireAuth }, contactController.list);
   app.post("/", { preHandler: requireAuth }, contactController.create);
+  app.patch("/:id", { preHandler: requireAuth }, contactController.update);
   app.delete("/:id", { preHandler: requireAuth }, contactController.remove);
 }

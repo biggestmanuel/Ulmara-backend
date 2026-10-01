@@ -308,6 +308,18 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     auth: true,
     params: [{ name: "id", schema: idParamSchema.shape.id, description: "Contact id (UUID)." }],
   },
+  "PATCH /api/contact/:id": {
+    summary: "Rename or re-point a saved contact",
+    tags: ["contact"],
+    auth: true,
+    description:
+      "Body is { name?, accountId? } with at least one field present. Updates in place, so the " +
+      "contact id is preserved — the client previously had to DELETE and re-POST, which changed " +
+      "the id and lost the contact if the second call failed. 404 if the contact is missing or is " +
+      "not the caller's, 404 \"Account ID not found\" for an unknown Account ID, and 409 for a name " +
+      "this owner already uses on another contact.",
+    params: [{ name: "id", schema: idParamSchema.shape.id, description: "Contact id (UUID)." }],
+  },
 
   // ---- payment -----------------------------------------------------------
   "POST /api/payment/request": { summary: "Create a payment request", tags: ["payment"], auth: true },

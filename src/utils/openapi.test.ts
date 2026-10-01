@@ -59,6 +59,7 @@ const LIVE_ROUTES: LiveRoute[] = [
   { method: "GET", url: "/api/contact" },
   { method: "POST", url: "/api/contact" },
   { method: "DELETE", url: "/api/contact/:id" },
+  { method: "PATCH", url: "/api/contact/:id" },
   { method: "POST", url: "/api/payment/request" },
   { method: "GET", url: "/api/payment/request/:id" },
   { method: "POST", url: "/api/payment/request/:id/fulfill" },

@@ -21,12 +21,30 @@ const paramsSchema = strictObject({
   id: z.string().uuid(),
 });
 
+/**
+ * C4 body for PATCH /api/contact/:id. Both fields optional, but at least one
+ * must be present — an empty patch is a client bug, and silently returning the
+ * unchanged contact would hide it.
+ */
+const updateSchema = strictObject({
+  name: z.string().trim().min(1).max(100).optional(),
+  accountId: z.string().regex(/^\d{10}$/).optional(),
+}).refine((value) => value.name !== undefined || value.accountId !== undefined, {
+  message: "Provide at least one of name or accountId",
+});
+
 export const contactController = {
   async list(req: FastifyRequest, reply: FastifyReply) {
     try { return reply.send(successResponse(await contactService.list(req.userId!))); } catch (e) { return handleError(e, reply); }
   },
   async create(req: FastifyRequest, reply: FastifyReply) {
     try { return reply.code(201).send(successResponse(await contactService.create(req.userId!, schema.parse(req.body)))); } catch (e) { return handleError(e, reply); }
+  },
+  async update(req: FastifyRequest, reply: FastifyReply) {
+    try {
+      const { id } = paramsSchema.parse(req.params);
+      return reply.send(successResponse(await contactService.update(req.userId!, id, updateSchema.parse(req.body))));
+    } catch (e) { return handleError(e, reply); }
   },
   async remove(req: FastifyRequest, reply: FastifyReply) {
     try { return reply.send(successResponse(await contactService.remove(req.userId!, paramsSchema.parse(req.params).id))); } catch (e) { return handleError(e, reply); }

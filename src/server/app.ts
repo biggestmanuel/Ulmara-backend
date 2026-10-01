@@ -116,6 +116,13 @@ export async function buildApp(): Promise<FastifyInstance> {
   // required and must contain at least one https:// origin.
   await app.register(cors, {
     origin: parseAllowedOrigins(env.ALLOWED_ORIGINS),
+    // B4/C4: PATCH was added to the contacts API, and @fastify/cors answers a
+    // preflight with its DEFAULT method list unless one is given. The default
+    // does not include PATCH, so a browser preflight for a contact rename was
+    // rejected before the request left the page — the route would have existed
+    // and still have been unreachable from the app. Listed explicitly rather
+    // than left implicit so the next added verb cannot be forgotten here.
+    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
   });
 
   await app.register(helmet, {
