@@ -191,8 +191,20 @@ export const env = parsed.data;
  * DEV_VERIFICATION_MODE=true and no provider at all.
  */
 export function assertEmailProviderConfigured(): void {
+  // B1: DEV_VERIFICATION_MODE is refused in production, and refuses LOUDLY.
+  // It used to `return` here — an early exit that silently disabled the
+  // credential check while leaving the flag itself set, so production with the
+  // flag on would have skipped the provider requirement AND (per
+  // devVerificationEnabled) skipped delivery, i.e. no way to verify anybody.
+  // Refusing to start is the only safe reading of "hard-ignore the flag".
+  if (env.NODE_ENV === "production" && env.DEV_VERIFICATION_MODE) {
+    throw new Error(
+      "DEV_VERIFICATION_MODE=true is not permitted when NODE_ENV=production. " +
+        "It bypasses the email provider and returns verification codes in the API response. " +
+        "Unset it for production.",
+    );
+  }
   if (env.NODE_ENV !== "production") return;
-  if (env.DEV_VERIFICATION_MODE) return;
 
   const missing: string[] = [];
   switch (env.EMAIL_PROVIDER) {

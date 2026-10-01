@@ -53,7 +53,15 @@ async function issueAndDeliverCode(
   email: string,
   channel: VerificationChannel,
 ): Promise<{ code: string; devCode?: string }> {
-  if (!isEmailProviderConfigured()) {
+  const devMode = devVerificationEnabled();
+
+  // In dev-verification mode the provider is bypassed ENTIRELY, not merely
+  // tolerated. Previously the unconfigured-provider check ran first, so
+  // DEV_VERIFICATION_MODE=true with no credentials still produced a 503 and no
+  // devCode — the flag could not do the one thing it exists to do. The code is
+  // still created and still expires on the normal TTL; only the external send
+  // is skipped.
+  if (!devMode && !isEmailProviderConfigured()) {
     logger.error(
       { event: "email_provider_unavailable", provider: env.EMAIL_PROVIDER, channel },
       "Cannot deliver a verification code: the configured email provider has no credentials",
@@ -62,6 +70,16 @@ async function issueAndDeliverCode(
   }
 
   const code = await createVerificationCode(userId, channel);
+
+  if (devMode) {
+    // No external delivery is attempted at all. The code was created above, so
+    // it expires on the normal TTL and still consumes the wrong-code budget.
+    logger.warn(
+      { event: "dev_verification_code", userId, channel, code },
+      "DEV_VERIFICATION_MODE is on: provider delivery was SKIPPED, and the verification code is in this log line and in the response",
+    );
+    return { code, devCode: code };
+  }
 
   const { html, text } = verificationEmailBody(code, ttlMinutes());
   const sent = await trySendEmail(email, verificationEmailSubject(code), html, text);
@@ -77,13 +95,6 @@ async function issueAndDeliverCode(
     "Verification code issued and dispatched",
   );
 
-  if (devVerificationEnabled()) {
-    logger.warn(
-      { event: "dev_verification_code", userId, channel, code },
-      "DEV_VERIFICATION_MODE is on: the verification code is in this log line and in the response",
-    );
-    return { code, devCode: code };
-  }
   return { code };
 }
 
