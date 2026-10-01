@@ -2,7 +2,10 @@ import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 
 /** The System program. Required in an ATA create instruction; inert for the transfer itself. */
-const SYSTEM_PROGRAM_ID = new PublicKey("11111111111111111111111111111111");
+/** Exported so the ATA account ORDER can be asserted in tests: the associated
+ *  token program reads its accounts positionally and reports a reordering as a
+ *  bare "invalid instruction data". */
+export const SYSTEM_PROGRAM_ID = new PublicKey("11111111111111111111111111111111");
 
 /**
  * Minimal SPL (Solana Program Library) token support.
@@ -52,8 +55,16 @@ export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
   "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
 );
 
-/** Instruction index of `Transfer` within the token program. */
-const TOKEN_INSTRUCTION_TRANSFER = 9;
+/**
+ * `TransferChecked` (12), not the legacy `Transfer` (9).
+ *
+ * `Transfer` is rejected by the current token program — see the note on
+ * `createTransferInstruction`, which has the measurement. The tag and the data
+ * length are load-bearing and are asserted in spl.test.ts.
+ */
+const TOKEN_INSTRUCTION_TRANSFER_CHECKED = 12;
+/** tag + u64 amount + u8 decimals. */
+const TOKEN_TRANSFER_CHECKED_DATA_LENGTH = 1 + 8 + 1;
 /** A token account is exactly this long; a mismatch means we read a non-account. */
 const TOKEN_ACCOUNT_LENGTH = 165;
 /** Byte offset of the little-endian u64 `amount` within a token account. */
@@ -86,6 +97,19 @@ export function associatedTokenAddress(
   return address;
 }
 
+/**
+ * Decimals are a u8 on the wire, so anything outside 0-255 cannot be encoded —
+ * and a wrong value here would be a silent, catastrophic token-amount error
+ * rather than a crash. Refusing is the only safe answer.
+ */
+function assertDecimals(decimals: number): void {
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+    throw new RangeError(
+      `SPL decimals must be an integer 0-255 (it is a u8 in the instruction); got ${String(decimals)}`,
+    );
+  }
+}
+
 /** Writes a little-endian u64 into `buf` at `offset`. */
 function writeU64LE(buf: Buffer, offset: number, value: bigint): void {
   if (value < 0n) throw new RangeError(`SPL amount cannot be negative (got ${value})`);
@@ -96,12 +120,37 @@ function writeU64LE(buf: Buffer, offset: number, value: bigint): void {
 }
 
 /**
- * `Transfer` on the SPL Token program: moves `amount` base units from the
+ * `TransferChecked` on the SPL Token program: moves `amount` base units from the
  * owner's token account to the recipient's.
  *
+ * ## This is `TransferChecked` (12), NOT `Transfer` (9) — and that is the whole point
+ *
+ * The legacy `Transfer` instruction is rejected by the current token program.
+ * Measured on a local validator with a FUNDED source account, both forms sent as
+ * real transactions against the same mint:
+ *
+ *     Transfer        (9, 3 keys, 105 bytes)  -> custom error 0xb
+ *                                               "Non-native account can only be
+ *                                                closed if its balance is zero"
+ *     TransferChecked (12, 4 keys, 10 bytes)  -> SUCCEEDS
+ *
+ * Neither error mentions the transfer, so this failed silently in the sense that
+ * matters: `simulateTransaction` against a destination that does not exist yet
+ * returned a plausible-looking result, and the Devnet decode check in
+ * `verify:solana` never got far enough to compare. The bug is that this
+ * function produced an instruction the program refuses to execute.
+ *
+ * The `Checked` variants take the mint's expected `decimals` as a trailing byte
+ * and the program REJECTS the whole transaction if it disagrees with the mint.
+ * That is precisely why they are the correct choice for a financial transfer: a
+ * decimals mismatch fails loudly instead of moving a wrong number of tokens,
+ * and a 1-vs-6 decimals confusion cannot silently become a 1e6 error.
+ *
+ * ## Amounts
+ *
  * `amount` MUST already be in the mint's base units — use `toBaseUnits` from
- * `src/utils/money.ts` with the mint's own `decimals`. A float here would lose
- * real value, and the program would happily execute a wrong amount.
+ * `src/utils/money.ts` with this same `decimals`. A float here would lose real
+ * value, and the program would happily execute a wrong amount.
  */
 export function createTransferInstruction(args: {
   mint: PublicKey;
@@ -112,20 +161,36 @@ export function createTransferInstruction(args: {
   /** The account that signs and pays fees. May equal `source`'s owner. */
   owner: PublicKey;
   amount: bigint;
+  /**
+   * The mint's decimals. Required, not optional: the point of `TransferChecked`
+   * is that the program verifies it, so an "assume 6" default would remove the
+   * only protection the instruction provides.
+   */
+  decimals: number;
   program?: TokenProgram;
 }): TransactionInstruction {
-  const data = Buffer.alloc(1 + 32 * 4);
-  data.writeUInt8(TOKEN_INSTRUCTION_TRANSFER, 0);
+  assertDecimals(args.decimals);
+  // Exact canonical layout, 10 bytes:
+  //
+  //   [0]     tag (12 = TransferChecked)
+  //   [1..8]  u64 amount, little-endian
+  //   [9]     expected decimals
+  //
+  // The mint is an ACCOUNT here (position 1, read-only), not a field in the
+  // data — which is the structural difference from the old encoding, where the
+  // three pubkeys were packed into the data buffer and the mint was absent.
+  const data = Buffer.alloc(TOKEN_TRANSFER_CHECKED_DATA_LENGTH);
+  data.writeUInt8(TOKEN_INSTRUCTION_TRANSFER_CHECKED, 0);
   writeU64LE(data, 1, args.amount);
-  args.source.toBuffer().copy(data, 9);
-  args.destination.toBuffer().copy(data, 41);
-  args.owner.toBuffer().copy(data, 73);
+  data.writeUInt8(args.decimals, 9);
 
   return new TransactionInstruction({
     programId: tokenProgramId(args.program ?? "spl-token"),
-    // source and destination are writable, owner only signs.
+    // [source (w), mint (r), destination (w), owner (s)] — the mint is
+    // read-only, and position matters: the program reads them positionally.
     keys: [
       { pubkey: args.source, isSigner: false, isWritable: true },
+      { pubkey: args.mint, isSigner: false, isWritable: false },
       { pubkey: args.destination, isSigner: false, isWritable: true },
       { pubkey: args.owner, isSigner: true, isWritable: false },
     ],
@@ -151,22 +216,42 @@ export function createAssociatedTokenAccountInstruction(args: {
   idempotent?: boolean;
 }): TransactionInstruction {
   const idempotent = args.idempotent ?? true;
-  const data = Buffer.alloc(1 + 32 * 4);
-  data.writeUInt8(idempotent ? 1 : 0, 0);
-  args.funder.toBuffer().copy(data, 1);
-  associatedTokenAddress(args.mint, args.owner, args.program).toBuffer().copy(data, 33);
-  args.owner.toBuffer().copy(data, 65);
-  args.mint.toBuffer().copy(data, 97);
+  // The data buffer is the DISCRIMINANT AND NOTHING ELSE — one byte.
+  //
+  // This previously packed funder/ata/owner/mint into the data as well (129
+  // bytes), on the assumption that the program read its arguments positionally
+  // out of `data` the way the token program's own instructions do. It does not:
+  // every one of these values is already an account in the `keys` array, and the
+  // program rejects the instruction with a bare "invalid instruction data" that
+  // names neither the length nor the field.
+  //
+  // Proven against a local validator by dumping the instruction the official
+  // spl-token client builds for the same owner/mint and comparing: the official
+  // data is 1-2 bytes, and simulating each shape settles it —
+  //   [1]      ACCEPTED  (CreateIdempotent)
+  //   [1,0]    rejected  (extra byte)
+  //   [0]      rejected  (legacy Create, account already exists)
+  //   [0,0]    rejected  (same)
+  // so exactly one byte is the correct encoding for the form we use.
+  const data = Buffer.from([idempotent ? 1 : 0]);
 
   return new TransactionInstruction({
     programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+    // The key ORDER is the program's ABI, not a convention. The associated token
+    // program reads positionally and rejects a reordered list with a bare
+    // "invalid instruction data" — no field name, no indication that ordering is
+    // the problem. Found by running this against a real validator, where the
+    // rent sysvar was supplied last instead of the token program.
+    //
+    //   0 funder (w, signer)  1 associated account (w)  2 owner (r)
+    //   3 mint (r)            4 system program (r)     5 token program (r)
     keys: [
       { pubkey: args.funder, isSigner: true, isWritable: true },
       { pubkey: associatedTokenAddress(args.mint, args.owner, args.program), isSigner: false, isWritable: true },
       { pubkey: args.owner, isSigner: false, isWritable: false },
       { pubkey: args.mint, isSigner: false, isWritable: false },
       { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: new PublicKey("SysvarRent111111111111111111111111111111111"), isSigner: false, isWritable: false },
+      { pubkey: tokenProgramId(args.program ?? "spl-token"), isSigner: false, isWritable: false },
     ],
     data,
   });

@@ -3,6 +3,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import { toBaseUnits } from "../../utils/money.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  SYSTEM_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   associatedTokenAddress,
@@ -66,32 +67,41 @@ describe("associatedTokenAddress", () => {
 });
 
 describe("createTransferInstruction", () => {
-  const build = (amount: bigint) =>
+  const build = (amount: bigint, decimals = 6) =>
     createTransferInstruction({
       mint,
       source: associatedTokenAddress(mint, owner.publicKey),
       destination: associatedTokenAddress(mint, recipient.publicKey),
       owner: owner.publicKey,
       amount,
+      decimals,
       program: "spl-token",
     });
 
-  it("emits exactly 1 discriminator byte plus 4 words", () => {
-    expect(build(1n).data.length).toBe(1 + 32 * 4);
+  it("emits exactly tag + u64 amount + u8 decimals", () => {
+    expect(build(1n).data.length).toBe(1 + 8 + 1);
   });
 
-  it("uses instruction index 9 for Transfer", () => {
-    expect(build(1n).data[0]).toBe(9);
+  it("uses instruction index 12 for TransferChecked, NOT 9 for Transfer", () => {
+    // The legacy `Transfer` (9) is REJECTED by the current token program with
+    // custom error 0xb. Measured by broadcasting both forms against a local
+    // validator with a funded source. Do not "simplify" this back to 9.
+    expect(build(1n).data[0]).toBe(12);
   });
 
-  it("lays the fields out as amount, source, destination, owner", () => {
-    const source = associatedTokenAddress(mint, owner.publicKey);
-    const destination = associatedTokenAddress(mint, recipient.publicKey);
+  it("carries the decimals as the trailing byte, which the program verifies", () => {
+    expect(build(1n, 6).data[9]).toBe(6);
+    expect(build(1n, 9).data[9]).toBe(9);
+    expect(build(1n, 0).data[9]).toBe(0);
+  });
+
+  it("puts the amount in bytes 1-8, little-endian, and nothing else", () => {
+    // The pubkeys are NOT in the data. That was the original bug: the old
+    // encoding packed source/destination/owner into 129 bytes of data and the
+    // program parsed them positionally, so the layout was wrong twice over.
     const ix = build(1_500_000n);
     expect(ix.data.readBigUInt64LE(1)).toBe(1_500_000n);
-    expect(ix.data.subarray(9, 41).toString("base64")).toBe(source.toBuffer().toString("base64"));
-    expect(ix.data.subarray(41, 73).toString("base64")).toBe(destination.toBuffer().toString("base64"));
-    expect(ix.data.subarray(73, 105).toString("base64")).toBe(owner.publicKey.toBuffer().toString("base64"));
+    expect(ix.data.length).toBe(10);
   });
 
   it("writes the amount LITTLE-endian, as the program requires", () => {
@@ -102,12 +112,33 @@ describe("createTransferInstruction", () => {
     expect(data.readBigUInt64LE(1)).toBe(258n);
   });
 
-  it("marks source and destination writable, and owner as a non-writable signer", () => {
+  it("passes the mint as a read-only ACCOUNT, not as data", () => {
+    // The mint is account index 1 and must not be writable: the token program
+    // rejects a writable mint for this instruction.
     const ix = build(1n);
-    expect(ix.keys).toHaveLength(3);
+    expect(ix.keys).toHaveLength(4);
+    expect(ix.keys[1].pubkey.equals(mint)).toBe(true);
+    expect(ix.keys[1].isWritable).toBe(false);
+    expect(ix.keys[1].isSigner).toBe(false);
+  });
+
+  it.each([-1, 256, 6.5, Number.NaN])(
+    "refuses decimals %s, which cannot be encoded as a u8",
+    (bad) => {
+      // A wrong decimals value here is a silent 1-vs-6 token-amount error, so it
+      // must be refused at construction rather than written into the instruction.
+      expect(() => build(1n, bad)).toThrow(RangeError);
+    },
+  );
+
+  it("marks source and destination writable, and owner as a non-writable signer", () => {
+    // 4 accounts now: [source (w), mint (r), destination (w), owner (s)].
+    const ix = build(1n);
+    expect(ix.keys).toHaveLength(4);
     expect(ix.keys[0]).toMatchObject({ isWritable: true, isSigner: false });
-    expect(ix.keys[1]).toMatchObject({ isWritable: true, isSigner: false });
-    expect(ix.keys[2]).toMatchObject({ isWritable: false, isSigner: true });
+    expect(ix.keys[1]).toMatchObject({ isWritable: false, isSigner: false });
+    expect(ix.keys[2]).toMatchObject({ isWritable: true, isSigner: false });
+    expect(ix.keys[3]).toMatchObject({ isWritable: false, isSigner: true });
   });
 
   it("refuses a negative amount rather than wrapping it", () => {
@@ -153,14 +184,33 @@ describe("createAssociatedTokenAccountInstruction", () => {
     expect(legacy.data[0]).toBe(0);
   });
 
-  it("lays out funder, ata, owner, mint after the discriminant", () => {
+  it("sends ONE byte of data — the discriminant — and nothing else", () => {
+    // This previously asserted a 129-byte payload carrying funder/ata/owner/mint
+    // after the discriminant. Those values are all ACCOUNTS, and the program
+    // reads them from `keys`, not from `data`; packing them in made every
+    // instruction fail with a bare "invalid instruction data".
+    //
+    // Proven by dumping the instruction the official spl-token client builds
+    // for the same owner/mint: its data is 1-2 bytes, ours was 129.
     const ix = createAssociatedTokenAccountInstruction({ funder: owner.publicKey, owner: recipient.publicKey, mint });
-    expect(ix.data.length).toBe(1 + 32 * 4);
-    expect(ix.data.subarray(1, 33).toString("base64")).toBe(owner.publicKey.toBuffer().toString("base64"));
-    expect(ix.data.subarray(33, 65).toString("base64"))
-      .toBe(associatedTokenAddress(mint, recipient.publicKey).toBuffer().toString("base64"));
-    expect(ix.data.subarray(65, 97).toString("base64")).toBe(recipient.publicKey.toBuffer().toString("base64"));
-    expect(ix.data.subarray(97, 129).toString("base64")).toBe(mint.toBuffer().toString("base64"));
+    expect(ix.data.length).toBe(1);
+  });
+
+  it("passes funder, ata, owner, mint, system and token program as ORDERED accounts", () => {
+    // The key ORDER is the ABI. The rent sysvar used to sit where the token
+    // program belongs, which the program rejected with "invalid instruction
+    // data" — no field name, no hint that ordering was the problem.
+    const ix = createAssociatedTokenAccountInstruction({ funder: owner.publicKey, owner: recipient.publicKey, mint });
+    expect(ix.keys).toHaveLength(6);
+    expect(ix.keys[0].pubkey.toBase58()).toBe(owner.publicKey.toBase58());
+    expect(ix.keys[1].pubkey.toBase58()).toBe(associatedTokenAddress(mint, recipient.publicKey).toBase58());
+    expect(ix.keys[2].pubkey.toBase58()).toBe(recipient.publicKey.toBase58());
+    expect(ix.keys[3].pubkey.toBase58()).toBe(mint.toBase58());
+    expect(ix.keys[4].pubkey.toBase58()).toBe(SYSTEM_PROGRAM_ID.toBase58());
+    expect(ix.keys[5].pubkey.toBase58()).toBe(TOKEN_PROGRAM_ID.toBase58());
+    // The funder signs and pays; the rest are not signers.
+    expect(ix.keys[0].isSigner).toBe(true);
+    expect(ix.keys.slice(1).every((k) => !k.isSigner)).toBe(true);
   });
 
   it("derives the same ATA the helper returns", () => {

@@ -124,8 +124,8 @@ export const solanaAdapter: ChainAdapter = {
       );
     }
 
-    // SPL token: a token-program Transfer, plus an idempotent associated-account
-    // creation when the recipient has never held this token.
+    // SPL token: a token-program TransferChecked, plus an idempotent
+    // associated-account creation when the recipient has never held this token.
     const token = requireSplToken(input.asset);
     const mint = new PublicKey(token.address);
     const to = new PublicKey(input.toAddress);
@@ -150,6 +150,11 @@ export const solanaAdapter: ChainAdapter = {
       // here, or a float, would move the wrong amount — the single most
       // damaging SPL bug there is.
       amount: toBaseUnits(input.amount, token.decimals),
+      // Passed so the PROGRAM verifies it. The amount above and the decimals the
+      // program checks are derived from the same registry entry, so a mismatch is
+      // impossible by construction — and if it ever happens, the transaction is
+      // rejected rather than moving the wrong number of tokens.
+      decimals: token.decimals,
       program: token.program,
     }));
     return transaction;
