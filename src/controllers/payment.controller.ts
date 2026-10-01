@@ -11,6 +11,16 @@ const requestSchema = strictObject({
   symbol: z.string().trim().min(1).max(20).optional(),
   amount: moneyString().optional(),
   expiresAt: z.string().datetime().optional(),
+  // C3: `note` is optional, trimmed, capped at 140 characters, and an empty
+  // (or whitespace-only) string is treated as absent rather than stored as "".
+  // The transform runs after the length check so the cap applies to what is
+  // actually stored, not to the raw input padded with spaces.
+  note: z
+    .string()
+    .transform((value) => value.trim())
+    .pipe(z.string().max(140, "note must be 140 characters or fewer"))
+    .transform((value) => (value.length === 0 ? undefined : value))
+    .optional(),
 // Both fields are `.min(1).optional()`, so by the time this refine runs each is
 // either absent or a non-empty string: an explicit presence check is exactly
 // equivalent to the truthiness check and states the intent more precisely.

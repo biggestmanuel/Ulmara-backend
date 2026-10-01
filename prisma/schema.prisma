@@ -178,6 +178,8 @@ model PaymentRequest {
   user                   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   asset                  String
   amount                 Decimal?             @db.Decimal(36, 18)
+  /// Free-text note shown to whoever pays the request. Optional, max 140 chars.
+  note                   String?
   status                 PaymentRequestStatus @default(OPEN)
   expiresAt              DateTime?
   createdAt              DateTime             @default(now())
