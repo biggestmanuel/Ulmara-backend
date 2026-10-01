@@ -135,20 +135,25 @@ for (const token of tokens) {
     destination,
     owner: owner.publicKey,
     amount: toBaseUnits("1.5", token.decimals),
+    decimals: token.decimals,
     program: token.program,
   });
 
   // 3a. structural checks, so a failure says which byte is wrong.
-  const expectedLength = 1 + 32 * 4;
+  // TransferChecked is tag + u64 + u8 decimals = 10 bytes. This used to assert
+  // 129 bytes (1 + 32*4) against the old, wrong encoding.
+  const expectedLength = 1 + 8 + 1;
   if (instruction.data.length !== expectedLength) {
     fail(`${label}: instruction data is ${instruction.data.length} bytes, expected ${expectedLength}`);
   } else {
-    pass(`${label}: instruction data is ${expectedLength} bytes (1 discriminator + 4 words)`);
+    pass(`${label}: instruction data is ${expectedLength} bytes (tag + u64 amount + u8 decimals)`);
   }
-  if (instruction.data[0] !== 9) {
-    fail(`${label}: discriminator is ${instruction.data[0]}, expected 9 (Transfer)`);
+  // TransferChecked (12), NOT the legacy Transfer (9): the current token program
+  // rejects 9 with custom error 0xb. See createTransferInstruction in spl.ts.
+  if (instruction.data[0] !== 12) {
+    fail(`${label}: discriminator is ${instruction.data[0]}, expected 12 (TransferChecked)`);
   } else {
-    pass(`${label}: discriminator is 9 (Transfer)`);
+    pass(`${label}: discriminator is 12 (TransferChecked)`);
   }
   if (instruction.programId.toBase58() !== program.toBase58()) {
     fail(`${label}: programId is ${instruction.programId.toBase58()}, expected ${program.toBase58()}`);
@@ -156,20 +161,32 @@ for (const token of tokens) {
     pass(`${label}: programId is ${program.toBase58()}`);
   }
 
-  // 3b. the round trip: the amount and every address must come back out.
+  // 3b. the round trip: the amount and the decimals must come back out.
+  // The addresses are NOT in the data — they are accounts. That was the original
+  // bug: 129 bytes of data with three pubkeys packed in, which the token program
+  // parses positionally and rejected outright.
   const encodedAmount = instruction.data.readBigUInt64LE(1);
   const want = toBaseUnits("1.5", token.decimals);
   if (encodedAmount !== want) fail(`${label}: amount round-tripped as ${encodedAmount}, expected ${want}`);
   else pass(`${label}: amount round-trips exactly (${fromBaseUnits(encodedAmount, token.decimals)})`);
 
-  for (const [name, got, wantKey] of [
-    ["source", instruction.data.subarray(9, 41), source],
-    ["destination", instruction.data.subarray(41, 73), destination],
-    ["owner", instruction.data.subarray(73, 105), owner.publicKey],
-  ] as const) {
-    if (got.toString("base64") !== wantKey.toBuffer().toString("base64")) fail(`${label}: ${name} address did not round-trip`);
+  if (instruction.data[9] !== token.decimals) {
+    fail(`${label}: data carries decimals ${instruction.data[9]}, expected ${token.decimals}`);
+  } else {
+    pass(`${label}: the instruction carries the mint's own decimals (${token.decimals}), which the program verifies`);
   }
-  pass(`${label}: source, destination and owner all round-trip`);
+
+  // The account ORDER is the ABI, and the program reads it positionally.
+  for (const [i, wantKey] of [source, mint, destination, owner.publicKey].entries()) {
+    if (!instruction.keys[i].pubkey.equals(wantKey)) {
+      fail(`${label}: account ${i} is ${instruction.keys[i].pubkey.toBase58()}, expected ${wantKey.toBase58()}`);
+    }
+  }
+  if (!instruction.keys[1].pubkey.equals(mint) || instruction.keys[1].isWritable) {
+    fail(`${label}: the mint must be account 1 and read-only`);
+  } else {
+    pass(`${label}: accounts are [source, mint, destination, owner] with the mint read-only`);
+  }
 
   // 3c. THE test: does the on-chain program decode it?
   const tx = new Transaction({ feePayer: owner.publicKey, recentBlockhash: (await conn.getLatestBlockhash()).blockhash })
