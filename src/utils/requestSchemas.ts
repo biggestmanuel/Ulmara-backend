@@ -65,6 +65,24 @@ export const referenceParamSchema = strictObject({
 });
 
 /**
+ * B5: `GET /api/wallet/token-balances` — one chain plus the address to read.
+ *
+ * Lives beside `chainParamSchema` because it is the same kind of thing (a wire
+ * identifier plus its companion value) and both the controller and the OpenAPI
+ * document need the identical object — a second, hand-written copy in the
+ * controller is exactly how a spec starts lying.
+ */
+export const tokenBalancesQuerySchema = strictObject({
+  chain: z.enum(CHAIN_NAMES, {
+    error: `chain must be one of: ${CHAIN_NAMES.join(", ")}`,
+  }),
+  // The address bound depends on the chain, so only length/shape is checked
+  // here; the chain adapter's own isValidAddress decides the rest (and produces
+  // the 400 for a malformed address).
+  address: z.string().trim().min(1).max(140),
+});
+
+/**
  * Pagination.
  *
  * Both values arrive as strings, so they are validated as digit strings first

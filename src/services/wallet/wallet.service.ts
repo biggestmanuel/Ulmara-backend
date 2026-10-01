@@ -65,6 +65,68 @@ export const walletService = {
     );
   },
 
+  /**
+   * B5/C5: per-token balances for ONE chain and ONE address.
+   *
+   * The client calls this so the RPC fan-out, the per-token failure isolation
+   * and the rate-limiting all stay server-side. It used to receive a 404, which
+   * the client interprets as "this backend cannot do it" and permanently falls
+   * back to one `eth_call` per token from the device — so a feature that was
+   * built server-side was silently running on the phone instead.
+   *
+   * The returned shape is the client's `TokenBalance` exactly: `chain` (its own
+   * lower-case ChainId) and `network` (the UPPERCASE wire id) are both present
+   * because the client types them separately, and `contractAddress` — not
+   * `address` — is the field name it reads.
+   *
+   * A chain that cannot be reached produces an EMPTY LIST, never a raw 500:
+   * the client's own contract for an unreadable chain is "no rows", and a 500
+   * there would make the whole balances card fail instead of just the tokens.
+   */
+  async getTokenBalancesForChain(chain: ChainName, address: string) {
+    let adapter: ChainAdapter;
+    try {
+      adapter = await getChainAdapter(chain);
+    } catch (err) {
+      logger.warn({ chain, err }, "Chain adapter unavailable; reporting no token balances");
+      return [];
+    }
+
+    if (!adapter.isValidAddress(address)) {
+      throw Object.assign(new Error(`Invalid ${chain} address`), { statusCode: 400 });
+    }
+
+    const configured = adapter.listTokens?.() ?? [];
+    if (configured.length === 0 || !adapter.getTokenBalance) return [];
+
+    const rows = await Promise.all(
+      configured.map(async (token) => {
+        let balance: string | null = null;
+        try {
+          balance = await adapter.getTokenBalance!(address, token.symbol);
+        } catch (err) {
+          // One unreachable token must not hide the others, and must not fail
+          // the request: a null balance is the client's own representation of
+          // "could not read this one".
+          logger.warn({ chain, token: token.symbol, err }, "Token balance provider unavailable");
+        }
+        return {
+          symbol: token.symbol,
+          name: token.name,
+          // The client types `chain` as its own lower-case ChainId and reads
+          // `network` for the UPPERCASE wire identifier, so both are emitted.
+          chain: chain.toLowerCase(),
+          network: chain,
+          decimals: token.decimals,
+          contractAddress: token.address,
+          balance: balance ?? "0",
+        };
+      }),
+    );
+
+    return rows;
+  },
+
   /** Token metadata for a chain — lets a client render only valid assets. */
   async listSupportedTokens(chain: ChainName) {
     const adapter = await getChainAdapter(chain);

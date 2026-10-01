@@ -60,6 +60,7 @@ import {
   referenceParamSchema,
   registerWalletsSchema,
   signedTxSchema,
+  tokenBalancesQuerySchema,
 } from "./requestSchemas.js";
 
 /** The `Authorization: Bearer <jwt>` scheme used by every authenticated route. */
@@ -222,6 +223,20 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     tags: ["wallet"],
     auth: true,
     description: "A failing chain or token is reported as unavailable; it never hides the other balances.",
+  },
+  "GET /api/wallet/token-balances": {
+    summary: "Token balances for one chain and one address",
+    tags: ["wallet"],
+    auth: true,
+    query: {
+      schema: tokenBalancesQuerySchema,
+      description: "chain (UPPERCASE wire id) and the address to read. Both required.",
+    },
+    description:
+      "One row per token configured for that chain, each carrying symbol, name, chain (lower-case " +
+      "ChainId), network (UPPERCASE wire id), decimals, contractAddress and balance. Balances are " +
+      "exact decimal strings — no float conversion. A chain that cannot be reached yields an empty " +
+      "list rather than an error, and one unreadable token does not hide the others.",
   },
   "GET /api/wallet/addresses": {
     summary: "Registered wallet addresses",

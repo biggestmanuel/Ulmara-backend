@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { walletService } from "../services/wallet/wallet.service.js";
 import { successResponse, handleError } from "../utils/apiResponse.js";
-import { accountIdParamSchema, chainParamSchema, registerWalletsSchema } from "../utils/requestSchemas.js";
+import { accountIdParamSchema, chainParamSchema, registerWalletsSchema, tokenBalancesQuerySchema } from "../utils/requestSchemas.js";
 
 export const walletController = {
   async getBalances(request: FastifyRequest, reply: FastifyReply) {
@@ -46,6 +46,16 @@ export const walletController = {
     try {
       const { chain } = chainParamSchema.parse(request.params);
       return reply.send(successResponse(await walletService.listSupportedTokens(chain)));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
+  /** B5/C5: token balances for one chain + one address. */
+  async tokenBalances(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const { chain, address } = tokenBalancesQuerySchema.parse(request.query);
+      return reply.send(successResponse(await walletService.getTokenBalancesForChain(chain, address)));
     } catch (err) {
       return handleError(err, reply);
     }

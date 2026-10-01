@@ -48,6 +48,7 @@ const LIVE_ROUTES: LiveRoute[] = [
   { method: "POST", url: "/api/wallet/resolve/:accountId" },
   { method: "POST", url: "/api/wallet/register" },
   { method: "GET", url: "/api/wallet/tokens/:chain" },
+  { method: "GET", url: "/api/wallet/token-balances" },
   { method: "GET", url: "/api/transaction" },
   { method: "POST", url: "/api/transaction/send" },
   { method: "POST", url: "/api/transaction/fee" },
