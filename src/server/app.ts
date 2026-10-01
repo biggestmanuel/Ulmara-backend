@@ -63,6 +63,35 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
   app.setErrorHandler(errorHandler);
 
+  // B2: an empty body with `Content-Type: application/json` is accepted as no
+  // body. axios sets that header on EVERY request, including the ones that send
+  // no body at all (a POST with no payload, a DELETE), and Fastify's default
+  // parser rejects it before any handler runs:
+  //
+  //   "Body cannot be empty when content-type is set to 'application/json'"
+  //
+  // which is a 400 on a route that legitimately takes no input — it broke
+  // POST /api/account/create-account-id and DELETE /api/auth/me. Fixed once
+  // here rather than per route, so every current and future no-body route
+  // benefits.
+  //
+  // Only a body of zero length is treated as absent. A malformed or non-empty
+  // body is still parsed and still fails normally, and a route that REQUIRES
+  // fields still 400s on the missing keys when its schema runs against `{}`.
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    if (typeof body !== "string" || body.trim().length === 0) return done(null, {});
+    try {
+      done(null, JSON.parse(body));
+    } catch {
+      // Malformed JSON is a client error and must stay one, rather than
+      // becoming a 500 from a throw inside the parser.
+      const err = new Error("Body is not valid JSON") as Error & { statusCode?: number };
+      err.statusCode = 400;
+      done(err, undefined);
+    }
+  });
+
   // Start recording every route registration BEFORE any plugin is registered,
   // so the OpenAPI document is built from the same table the server dispatches
   // on rather than a list maintained alongside it.
