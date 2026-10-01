@@ -1,4 +1,5 @@
 import jwt, { type JwtPayload, type SignOptions } from "jsonwebtoken";
+import { randomUUID } from "node:crypto";
 import { env } from "./env.js";
 
 /**
@@ -60,7 +61,16 @@ export function jwtRotationState(): {
 export function signSessionToken(userId: string): string {
   // Always the CURRENT key — a token minted during a rotation window must not
   // be signed with the secret that is about to be retired.
-  return jwt.sign({ sub: userId }, env.JWT_SECRET, {
+  //
+  // `jti` is a per-token unique id. Without it, two tokens signed for the same
+  // user inside the same clock second were BYTE-IDENTICAL: `sub` matches and
+  // `iat` has one-second resolution. auth.service.login then inserted the
+  // second one into a table with a unique index on `token`, and the insert threw
+  // P2002, which the controller turned into a bare 500. A double-tapped login
+  // button was enough. The random jti makes each token distinct while leaving
+  // `sub` — the only claim anything reads — untouched, so tokens already
+  // issued keep verifying exactly as before.
+  return jwt.sign({ sub: userId, jti: randomUUID() }, env.JWT_SECRET, {
     expiresIn: env.JWT_EXPIRES_IN as SignOptions["expiresIn"],
   });
 }

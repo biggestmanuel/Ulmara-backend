@@ -59,6 +59,69 @@ describe("signSessionToken", () => {
     expect(() => jwt.verify(token, PREVIOUS)).toThrow();
     expect(jwt.verify(token, CURRENT)).toBeTruthy();
   });
+
+  // ---------------------------------------------------------------------
+  // B6: `Session.token` is @unique, and two tokens minted for the same user
+  // within the same clock second used to be BYTE-IDENTICAL — `sub` matched and
+  // `iat` has one-second resolution. The second insert raised P2002 and the
+  // controller turned it into a bare 500, so a double-tapped login button
+  // produced a server error. The random `jti` makes every token distinct.
+  // ---------------------------------------------------------------------
+  it("gives two tokens for the SAME user in the SAME second different values", () => {
+    const a = signSessionToken("user-1");
+    const b = signSessionToken("user-1");
+    expect(a).not.toBe(b);
+  });
+
+  it("stays distinct even when iat is frozen to the same second", () => {
+    // Freezing the clock is what makes this a real regression test: without the
+    // jti, identical sub + identical iat + identical secret + identical payload
+    // is a byte-for-byte identical signature.
+    vi.useFakeTimers();
+    try {
+      const a = signSessionToken("user-1");
+      const b = signSessionToken("user-1");
+      expect(a).not.toBe(b);
+      const decodedA = jwt.decode(a) as { sub: string; iat: number; jti: string };
+      const decodedB = jwt.decode(b) as { sub: string; iat: number; jti: string };
+      expect(decodedA.iat).toBe(decodedB.iat);
+      expect(decodedA.sub).toBe(decodedB.sub);
+      expect(decodedA.jti).not.toBe(decodedB.jti);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("carries a unique jti on every token", () => {
+    const jtis = new Set<string>();
+    for (let i = 0; i < 100; i++) {
+      const decoded = jwt.decode(signSessionToken("user-1")) as { jti?: string };
+      expect(typeof decoded.jti).toBe("string");
+      expect(decoded.jti).not.toBe("");
+      jtis.add(decoded.jti!);
+    }
+    expect(jtis.size).toBe(100);
+  });
+
+  it("keeps every previously issued token working", () => {
+    // A token minted before the change carries no jti at all. Verification must
+    // not have started requiring one, or this change would log everyone out.
+    const legacy = jwt.sign({ sub: "user-1" }, CURRENT, { expiresIn: "7d" });
+    const result = verifySessionToken(legacy);
+    expect(result.ok).toBe(true);
+  });
+
+  it("verifies a freshly minted token as before", () => {
+    const token = signSessionToken("user-1");
+    const result = verifySessionToken(token);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.claims.sub).toBe("user-1");
+  });
+
+  it("still rejects a token signed with an unknown secret", () => {
+    const forged = jwt.sign({ sub: "user-1", jti: "attacker-chosen" }, "wrong-secret");
+    expect(verifySessionToken(forged).ok).toBe(false);
+  });
 });
 
 describe("verifySessionToken in steady state", () => {
