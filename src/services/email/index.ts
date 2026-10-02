@@ -79,7 +79,12 @@ export async function trySendEmail(to: string, subject: string, html: string, te
     const provider = getEmailProvider();
     const result = await provider.send({ to, subject, html, text });
     logger.info(
-      { event: "email_sent", provider: result.provider, messageId: result.messageId, subject },
+      // `subject` is deliberately NOT logged. verificationEmailSubject()
+      // interpolates the live one-time code ("123456 is your Ulmara
+      // verification code"), so logging it wrote every active code into the log
+      // file and into Sentry. messageId is enough to trace a send, and the
+      // recipient is deliberately absent too.
+      { event: "email_sent", provider: result.provider, messageId: result.messageId },
       "Verification email dispatched",
     );
     return true;
