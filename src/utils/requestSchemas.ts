@@ -123,6 +123,37 @@ export const signedTxSchema = strictObject({
 });
 
 /**
+ * Profile settings accepted by `PATCH /api/account/settings`.
+ *
+ * ## Why three of these are `.nullable()`
+ *
+ * `name`, `photoUrl` and `defaultNetwork` are nullable columns on `User`
+ * (`name String?`, `photoUrl String?`, `defaultNetwork Chain?`) and `GET
+ * /api/account/me` already returns `null` for them. The schema only marking
+ * them `.optional()` made that state **unreachable through the API**: a client
+ * could set a value but never remove one, and `""` is refused too (`name` has
+ * `.min(1)`), so there was no way back. Measured on the test database, 5 of 6
+ * rows were NULL in all three columns purely because they were *created* that
+ * way — the API could not have produced it.
+ *
+ * `.nullable().optional()` therefore means exactly two things, and the
+ * distinction is load-bearing:
+ *   - key **absent** -> leave this setting alone (no write)
+ *   - key present and **null** -> clear this setting back to NULL
+ *
+ * `defaultCurrency` and `defaultLanguage` are deliberately NOT nullable: they
+ * are `String @default("NGN")` / `@default("en")` in `prisma/schema.prisma`,
+ * so they have no asymmetry to fix and no "unset" state to return to.
+ */
+export const settingsSchema = strictObject({
+  name: z.string().trim().min(1).max(100).nullable().optional(),
+  photoUrl: z.string().url().max(500).nullable().optional(),
+  defaultCurrency: z.string().trim().length(3).toUpperCase().optional(),
+  defaultLanguage: z.string().trim().min(2).max(10).optional(),
+  defaultNetwork: z.enum(CHAIN_NAMES).nullable().optional(),
+});
+
+/**
  * A batch of wallets to register.
  *
  * Without a bounded array, a client could post tens of thousands of addresses

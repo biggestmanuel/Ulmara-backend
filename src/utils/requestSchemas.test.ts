@@ -7,6 +7,7 @@ import {
   paginationQuerySchema,
   referenceParamSchema,
   registerWalletsSchema,
+  settingsSchema,
   signedTxSchema,
 } from "./requestSchemas.js";
 
@@ -156,5 +157,86 @@ describe("registerWalletsSchema", () => {
   it("rejects a body that is not an object", () => {
     expect(registerWalletsSchema.safeParse(null).success).toBe(false);
     expect(registerWalletsSchema.safeParse("addresses").success).toBe(false);
+  });
+});
+
+/**
+ * `PATCH /api/account/settings` — clearing a setting vs leaving it alone.
+ *
+ * `name`, `photoUrl` and `defaultNetwork` are nullable columns on `User`, and
+ * `GET /api/account/me` already returns `null` for an unset one. Before this
+ * change the schema marked them only `.optional()`, so null was **unreachable
+ * through the API**: a client could set a value but never remove one, and `""`
+ * was refused too. On the test database 5 of 6 rows were NULL in all three
+ * columns only because they were *created* that way.
+ *
+ * The distinction these tests protect is the one the service depends on when it
+ * hands the parsed object to Prisma: an **absent** key means "do not write this
+ * column", an **explicit null** means "write NULL". Collapse the two and the
+ * endpoint either becomes unable to clear a setting, or silently blanks
+ * settings the client never mentioned.
+ */
+describe("settingsSchema", () => {
+  it("accepts an explicit null to clear each nullable setting", () => {
+    // `as const` so `field` is a literal union of real keys and `parsed[field]`
+    // stays type-checked — a bare `string[]` would be an implicit-any index.
+    const nullableFields = ["name", "photoUrl", "defaultNetwork"] as const;
+    for (const field of nullableFields) {
+      const parsed = settingsSchema.parse({ [field]: null });
+      expect(parsed[field]).toBeNull();
+    }
+  });
+
+  it("omits an absent key entirely so Prisma leaves that column alone", () => {
+    // The whole point: `name` is NOT in the result, so it is not in the `data`
+    // object and no write is generated for it.
+    const parsed = settingsSchema.parse({ name: "Ada" });
+    expect(Object.keys(parsed)).toEqual(["name"]);
+    expect("photoUrl" in parsed).toBe(false);
+    expect("defaultNetwork" in parsed).toBe(false);
+  });
+
+  it("keeps absent and null distinct when both appear in one body", () => {
+    const parsed = settingsSchema.parse({ name: null, defaultNetwork: "ETH" });
+    expect(parsed.name).toBeNull();
+    expect(parsed.defaultNetwork).toBe("ETH");
+    expect("photoUrl" in parsed).toBe(false);
+  });
+
+  it("still refuses to clear the two non-nullable settings", () => {
+    // `String @default("NGN")` / `@default("en")` in prisma/schema.prisma —
+    // there is no unset state to return to, so null must stay a 400.
+    expect(settingsSchema.safeParse({ defaultCurrency: null }).success).toBe(false);
+    expect(settingsSchema.safeParse({ defaultLanguage: null }).success).toBe(false);
+  });
+
+  it("still validates the value when it is not null", () => {
+    expect(settingsSchema.safeParse({ name: "Ada" }).success).toBe(true);
+    expect(settingsSchema.safeParse({ photoUrl: "https://example.com/p.png" }).success).toBe(true);
+    expect(settingsSchema.safeParse({ defaultNetwork: "ETH" }).success).toBe(true);
+
+    // nullability must not have loosened the bounds
+    expect(settingsSchema.safeParse({ name: "" }).success).toBe(false);
+    expect(settingsSchema.safeParse({ name: "x".repeat(101) }).success).toBe(false);
+    expect(settingsSchema.safeParse({ photoUrl: "not-a-url" }).success).toBe(false);
+    expect(settingsSchema.safeParse({ defaultNetwork: "" }).success).toBe(false);
+    expect(settingsSchema.safeParse({ defaultCurrency: "NG" }).success).toBe(false);
+  });
+
+  it("still rejects a lower-case chain, a numeric id and an unknown key", () => {
+    // Chain ids are UPPERCASE on the wire; lower-case stayed a 400 before.
+    expect(settingsSchema.safeParse({ defaultNetwork: "eth" }).success).toBe(false);
+    expect(settingsSchema.safeParse({ defaultNetwork: 7 }).success).toBe(false);
+    expect(settingsSchema.safeParse({ currency: "NGN" }).success).toBe(false);
+    expect(settingsSchema.safeParse({ defaultNetworks: "ETH" }).success).toBe(false);
+  });
+
+  it("accepts an empty body as a no-op rather than an error", () => {
+    expect(settingsSchema.safeParse({}).success).toBe(true);
+  });
+
+  it("still rejects a body that is not an object", () => {
+    expect(settingsSchema.safeParse(null).success).toBe(false);
+    expect(settingsSchema.safeParse("name").success).toBe(false);
   });
 });

@@ -215,6 +215,11 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     summary: "Update profile settings",
     tags: ["account"],
     auth: true,
+    description:
+      "Accepts name, photoUrl, defaultCurrency, defaultLanguage and defaultNetwork. Omit a key to " +
+      "leave that setting untouched. name, photoUrl and defaultNetwork are nullable: send an " +
+      "explicit null to clear one back to NULL, matching what GET /api/account/me returns for an " +
+      "unset value. defaultCurrency and defaultLanguage are not nullable — they always hold a value.",
   },
 
   // ---- wallet ------------------------------------------------------------

@@ -73,12 +73,16 @@ export const accountService = {
 
   async updateSettings(
     userId: string,
+    // `null` is a real instruction, not "absent": the schema uses
+    // `.nullable().optional()` so a client can clear a nullable column back to
+    // NULL. Omitting a key leaves it untouched, because Prisma only writes the
+    // keys actually present in `data`.
     input: Partial<{
-      name: string;
-      photoUrl: string;
+      name: string | null;
+      photoUrl: string | null;
       defaultCurrency: string;
       defaultLanguage: string;
-      defaultNetwork: Chain;
+      defaultNetwork: Chain | null;
     }>
   ) {
     return prisma.user.update({
