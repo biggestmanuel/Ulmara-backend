@@ -38,7 +38,12 @@ export function authRoutes(app: FastifyInstance) {
   app.post("/verify-phone", { preHandler: [requireAuth, verifyPhoneLimit.preHandler] }, authController.verifyPhone);
   app.post("/resend-code", { preHandler: [requireAuth, resendLimit.preHandler] }, authController.resendCode);
   app.post("/forgot-password", { preHandler: forgotPasswordLimit.preHandler }, authController.forgotPassword);
-  app.post("/set-pin", { preHandler: requireAuth }, authController.setPin);
+  // `setPin` is first-time only and refuses with a 409 once a PIN exists, so
+  // this is not a PIN-guessing budget. It is here for the same reason
+  // `changePinLimit` exists: a call that reaches `bcrypt.hash` at 12 rounds is
+  // expensive CPU, and an account with no PIN yet would let one session spend
+  // that budget without limit.
+  app.post("/set-pin", { preHandler: [requireAuth, changePinLimit.preHandler] }, authController.setPin);
   app.post("/verify-pin", { preHandler: [requireAuth, verifyPinLimit.preHandler] }, authController.verifyPin);
   app.post("/change-pin", { preHandler: [requireAuth, changePinLimit.preHandler] }, authController.changePin);
   app.get("/sessions", { preHandler: [requireAuth, sessionListLimit.preHandler] }, authController.listSessions);

@@ -29,7 +29,13 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 PG_CONTAINER="avora-pg-rehearsal"
-PG_PORT=5433
+# Overridable because 5433 is a common default and another project's container
+# may already hold it — in this environment `unimap-db` binds 0.0.0.0:5433, and
+# the throwaway container below then silently fails to start and the script
+# reports the misleading "PostgreSQL never became ready". The step 0 guard
+# interpolates this same value, so it stays correct at any port.
+#   PG_PORT=5435 npm run verify:migrations
+PG_PORT="${PG_PORT:-5433}"
 PG_USER="rehearsal"
 PG_PASS="rehearsal"
 PG_DB="rehearsal"
