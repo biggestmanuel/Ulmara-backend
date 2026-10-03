@@ -253,8 +253,40 @@ export const authService = {
     if (!/^\d{6}$/.test(pin)) {
       fail(400, "PIN must be 6 digits");
     }
+    // A PIN may be set ONCE. Overwriting an existing one without proving you
+    // know it removes the PIN's whole purpose as a second factor: a caller
+    // holding only a session token could replace the victim's PIN with a value
+    // they chose, then pass the transfer gate with it. That was reachable —
+    // `setPin` used to hash and write unconditionally.
+    //
+    // `changePin` is the endpoint for replacing a PIN: it requires the current
+    // one, is rate limited to 5/min, and its attempts count toward the shared
+    // lockout. This one is the first-time path only, so the two no longer
+    // overlap.
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { pinHash: true },
+    });
+    if (!user) {
+      fail(404, "Account not found");
+    }
+    if (user.pinHash) {
+      fail(409, "A PIN is already set for this account");
+    }
+    // Hashed after the cheap checks so a refused call costs no bcrypt work.
     const pinHash = await bcrypt.hash(pin, SALT_ROUNDS);
-    await prisma.user.update({ where: { id: userId }, data: { pinHash } });
+    // The write is a claim, not a plain update: `pinHash: null` sits in the
+    // `where`, so of two concurrent first-time calls exactly one can match and
+    // the other gets count 0. A read-then-write would let both through. This is
+    // the same shape as the PENDING -> PROCESSING claim in
+    // transactionService.broadcast.
+    const claimed = await prisma.user.updateMany({
+      where: { id: userId, pinHash: null },
+      data: { pinHash },
+    });
+    if (claimed.count !== 1) {
+      fail(409, "A PIN is already set for this account");
+    }
     return { success: true };
   },
 
