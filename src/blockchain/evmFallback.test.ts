@@ -35,8 +35,12 @@ const { providerMock, mocks } = vi.hoisted(() => {
   };
 });
 
+// Only `isAddress` and `JsonRpcProvider` are needed, and only the provider is
+// replaced. Spreading the real module keeps `isAddress` genuine, which is what
+// lets the suite assert the implementation agrees with ethers rather than with
+// a mock of itself.
 vi.mock("ethers", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("ethers")>();
+  const actual: object = await importOriginal();
   return { ...actual, JsonRpcProvider: mocks.JsonRpcProvider };
 });
 
