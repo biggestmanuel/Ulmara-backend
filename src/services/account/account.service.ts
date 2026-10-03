@@ -9,7 +9,9 @@ export const accountService = {
       include: { accountId: true },
     });
     if (!user) throw Object.assign(new Error("User not found"), { statusCode: 404 });
-    const { passwordHash, pinHash, ...safe } = user;
+    // `_`-prefixed so the deliberate omission of the credential columns is
+    // explicit at the destructuring site rather than looking like a dead read.
+    const { passwordHash: _passwordHash, pinHash: _pinHash, ...safe } = user;
     return safe;
   },
 
@@ -71,12 +73,16 @@ export const accountService = {
 
   async updateSettings(
     userId: string,
+    // `null` is a real instruction, not "absent": the schema uses
+    // `.nullable().optional()` so a client can clear a nullable column back to
+    // NULL. Omitting a key leaves it untouched, because Prisma only writes the
+    // keys actually present in `data`.
     input: Partial<{
-      name: string;
-      photoUrl: string;
+      name: string | null;
+      photoUrl: string | null;
       defaultCurrency: string;
       defaultLanguage: string;
-      defaultNetwork: Chain;
+      defaultNetwork: Chain | null;
     }>
   ) {
     return prisma.user.update({

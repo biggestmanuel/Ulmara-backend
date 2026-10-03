@@ -22,13 +22,17 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 // neither which user/account exists nor how many attempts remain.
 // ---------------------------------------------------------------------------
 
-/** Key per client IP (used where no auth context exists, e.g. login). */
-async function ipKey(request: FastifyRequest): Promise<string> {
+/**
+ * Key per client IP (used where no auth context exists, e.g. login).
+ * Synchronous on purpose: @fastify/rate-limit's `keyGenerator` accepts
+ * `string | number | Promise<...>`, and there is nothing to await here.
+ */
+function ipKey(request: FastifyRequest): string {
   return request.ip;
 }
 
 /** Key per authenticated user, falling back to IP before auth runs. */
-async function userOrIpKey(request: FastifyRequest): Promise<string> {
+function userOrIpKey(request: FastifyRequest): string {
   return request.userId ?? request.ip;
 }
 

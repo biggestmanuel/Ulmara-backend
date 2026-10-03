@@ -9,12 +9,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const envState = vi.hoisted(() => ({
   env: {
-    NODE_ENV: "test" as string,
+    NODE_ENV: "test",
     ALLOWED_ORIGINS: "http://localhost:8081,http://localhost:19006",
   },
 }));
 
-vi.mock("../config/env.js", () => ({ env: envState.env }));
+// The app calls the fail-loud env assertions at build time. These tests are
+// about rate limiting only, so the assertions are stubbed to no-ops.
+vi.mock("../config/env.js", () => ({
+  env: envState.env,
+  assertEmailProviderConfigured: () => undefined,
+  assertRampProviderConfigured: () => undefined,
+}));
 
 vi.mock("../config/logger.js", () => {
   const logger: Record<string, unknown> = {

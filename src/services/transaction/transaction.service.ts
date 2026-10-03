@@ -3,6 +3,8 @@ import { getChainAdapter, type ChainName } from "../../chains/index.js";
 import { transactionQueue } from "../../queues/transaction.queue.js";
 import type { SendTransactionInput } from "../../types/transaction.js";
 import { verifyAddressExists } from "../../blockchain/triverify.js";
+import { pinLockoutService } from "../auth/pinLockout.service.js";
+import { isUniqueConstraintViolation } from "../../utils/prismaError.js";
 
 // "1.50" and "1.5" are the same transfer; Decimal string forms can differ by
 // trailing zeros while a retry resends the user's original input.
@@ -10,7 +12,6 @@ function normalizeAmount(value: string): string {
   const trimmed = value.trim();
   return trimmed.includes(".") ? trimmed.replace(/0+$/, "").replace(/\.$/, "") : trimmed;
 }
-import { pinLockoutService } from "../auth/pinLockout.service.js";
 
 export const transactionService = {
   async estimateFee(input: { senderId: string; recipientAddress: string; asset: string; amount: string; network: ChainName }) {
@@ -82,14 +83,14 @@ export const transactionService = {
     const fastPath = await this.findByIdempotencyKey(input.idempotencyKey, input.senderId);
     if (fastPath && this.matchesIntent(fastPath, input)) return fastPath;
 
-    let recipientAccountId = input.recipientAccountId;
+    const recipientAccountId = input.recipientAccountId;
     let recipientAddress = input.recipientAddress;
     if (recipientAccountId) {
       const recipient = await prisma.accountId.findUnique({ where: { accountId: recipientAccountId } });
       if (!recipient) throw Object.assign(new Error("Recipient Account ID not found"), { statusCode: 404 });
       if (recipient.userId === input.senderId) throw Object.assign(new Error("Cannot send to your own Account ID"), { statusCode: 400 });
       const wallet = await prisma.wallet.findUnique({
-        where: { userId_chain: { userId: recipient.userId, chain: input.network as ChainName } },
+        where: { userId_chain: { userId: recipient.userId, chain: input.network } },
       });
       if (!wallet) throw Object.assign(new Error(`Recipient has no wallet on ${input.network}`), { statusCode: 400 });
       recipientAddress = wallet.address;
@@ -134,19 +135,19 @@ export const transactionService = {
             recipientAddress,
             asset: input.asset,
             amount: input.amount,
-            network: input.network as ChainName,
+            network: input.network,
             status: "PENDING",
             idempotencyKey: input.idempotencyKey,
           },
         });
       });
-    } catch (err: any) {
+    } catch (err) {
       // Lost a unique-constraint race on the key against a request whose
       // lookup ran before the winner committed (e.g. a cross-user collision:
       // another user's row is invisible to this user's replay lookups).
       // Fold to the original row when the params match; surface a conflict
       // when they do not.
-      if (err?.code !== "P2002") throw err;
+      if (!isUniqueConstraintViolation(err)) throw err;
       const winner = await this.findByIdempotencyKey(input.idempotencyKey, input.senderId);
       if (!winner || !this.matchesIntent(winner, { ...input, recipientAddress })) {
         throw Object.assign(new Error("This idempotency key was already used for a different transfer"), { statusCode: 409 });
@@ -175,7 +176,7 @@ export const transactionService = {
   // transaction's client when called inside prisma.$transaction.
   async findByIdempotencyKey(idempotencyKey: string, senderId: string, tx: Pick<typeof prisma, "transaction"> = prisma) {
     const existing = await tx.transaction.findUnique({ where: { idempotencyKey } });
-    if (!existing || existing.senderId !== senderId) return null;
+    if (existing?.senderId !== senderId) return null;
     return existing;
   },
 
