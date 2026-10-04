@@ -9,6 +9,10 @@ const state = vi.hoisted(() => ({
   dbOk: true,
   redisOk: true,
   dbError: "",
+  // Migrations applied. 0 is the state that made the 2026-10-03 outage
+  // invisible: the server was reachable, `SELECT 1` succeeded, and every real
+  // query failed because the schema was gone.
+  migrationCount: 9,
   queueCounts: {},
   isPaused: false,
   internalToken: undefined as string | undefined,
@@ -53,8 +57,18 @@ vi.mock("../config/jwt.js", () => ({
 }));
 vi.mock("../config/database.js", () => ({
   prisma: {
-    $queryRaw: async () => {
+    // Answers both readiness queries. The tag is inspected because the two
+    // calls mean different things: `SELECT 1` proves the socket works, while the
+    // `_prisma_migrations` count proves the schema is actually deployed.
+    $queryRaw: async (strings: TemplateStringsArray) => {
       if (!state.dbOk) throw new Error(state.dbError || "db down");
+      const sql = Array.isArray(strings) ? strings.join(" ") : String(strings);
+      if (sql.includes("_prisma_migrations")) {
+        if (state.migrationCount === -1) {
+          throw new Error('relation "_prisma_migrations" does not exist');
+        }
+        return [{ finished: BigInt(state.migrationCount) }];
+      }
       return [{ "?column?": 1 }];
     },
   },
@@ -156,6 +170,49 @@ describe("GET /health/ready (readiness)", () => {
     const res = await a.inject({ method: "GET", url: "/health/ready" });
     expect(res.statusCode).toBe(503);
     expect(res.json().checks.redis.ok).toBe(false);
+  });
+
+  it("is 503 when the schema has NOT been deployed, even though SELECT 1 works", async () => {
+    // THE regression from 2026-10-03. The database was reachable and answering
+    // `SELECT 1`, so `checks.database.ok` was true and the endpoint returned 200
+    // for seven hours while every Prisma-backed route returned 500 with
+    // `relation "public.User" does not exist`. Readiness has to assert the schema
+    // exists, not just that a socket does.
+    state.migrationCount = -1; // _prisma_migrations absent
+    const a = await app();
+    const res = await a.inject({ method: "GET", url: "/health/ready" });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json().status).toBe("degraded");
+    // The connection itself was fine — that is precisely the trap.
+    expect(res.json().checks.database.ok).toBe(true);
+    expect(res.json().checks.schema.ok).toBe(false);
+  });
+
+  it("is 503 when migrations exist but none have finished", async () => {
+    // A half-applied deploy: the table is there, the work is not done.
+    state.migrationCount = 0;
+    const a = await app();
+    const res = await a.inject({ method: "GET", url: "/health/ready" });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().checks.schema.error).toMatch(/migrate deploy/);
+  });
+
+  it("reports schema ok once migrations have been applied", async () => {
+    state.migrationCount = 9;
+    const a = await app();
+    const res = await a.inject({ method: "GET", url: "/health/ready" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().checks.schema).toEqual({ ok: true });
+  });
+
+  it("still answers /health 200 when the schema is missing (liveness != readiness)", async () => {
+    // The liveness probe must stay cheap and dependency-free: a load balancer
+    // restarting the process would not fix an un-deployed schema.
+    state.migrationCount = -1;
+    const a = await app();
+    const res = await a.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
   });
 });
 

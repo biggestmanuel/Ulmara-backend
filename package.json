@@ -28,6 +28,7 @@
     "verify:providers": "tsx scripts/verify-providers.ts",
     "test:load": "bash scripts/run-load-tests.sh",
     "verify:all": "npm run lint && npm run typecheck && npm test",
+    "verify:env": "bash scripts/verify-env.sh",
     "postinstall": "prisma skills sync || exit 0"
   },
   "dependencies": {

@@ -71,6 +71,29 @@ which values must be changed before production.
 See `OPERATIONS.md` §4 for the durability configuration and what is still
 recommended but not applied (managed/failover Redis, TLS, auth).
 
+### Before you boot: `npm run verify:env`
+
+Pointing this project at the wrong Postgres is the one mistake that has actually
+caused an outage here, so it is checked mechanically rather than trusted to
+memory. `verify:env` refuses to let you continue when:
+
+| it refuses | why |
+|---|---|
+| `DATABASE_URL` is unset | nothing can be verified |
+| the host is remote (Neon, any `*.neon.tech`) | a typo points disposable work at production. Override deliberately with `ALLOW_REMOTE_DATABASE=1`. |
+| port **5434** | `avora-fe-pg` — a container that was **shared with another project** and is now stopped. Starting it again re-creates the 2026-10-03 failure. |
+| port **5433** | held by another project's container. `verify:migrations` hardcoded that port and failed confusingly; it is now `PG_PORT`-overridable. |
+| **0** migrations applied | `SELECT 1` succeeds against an empty database, so a reachable server proves nothing about the schema. |
+
+That last row is why `GET /health/ready` now checks `_prisma_migrations` and not
+just connectivity: during the 2026-10-03 outage every database route returned
+500 while readiness reported `database: ok` for seven hours.
+
+**Use a database this project owns.** Ulmara's is the `ulmara-pg` container on
+port 5435. If you are working against a throwaway local environment rather than
+a managed database, `docs/LOCAL-TEST-ENVIRONMENT.md` describes it — disposable
+accounts, testnet balances, and the container/port layout.
+
 ## Scripts
 
 | command | purpose |
@@ -85,6 +108,7 @@ recommended but not applied (managed/failover Redis, TLS, auth).
 | `npm run lint` | ESLint, type-aware (`eslint.config.js`) |
 | `npm run lint:fix` | ESLint with autofix |
 | `npm run verify:all` | lint + typecheck + test, the same gate CI runs |
+| `npm run verify:env` | **run this before booting anything that touches the database** — refuses a remote host, the stopped shared container on 5434, another project's container on 5433, and a database with no migrations applied |
 | `npm run verify:tokens` | read every configured ERC-20 contract on-chain and compare code/decimals/symbol |
 | `npm run verify:redis` | restart Redis for real and assert queue + OTP + cache data survived |
 | `npm run test:load` | concurrent load test for the rate limiter and PIN lockout (needs Redis) |

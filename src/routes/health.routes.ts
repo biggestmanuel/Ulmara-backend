@@ -145,6 +145,31 @@ export function registerHealthRoutes(app: FastifyInstance): void {
       checks.database = { ok: false, error: (err as Error).message };
     }
 
+    // `SELECT 1` proves the server accepts connections and nothing more — it
+    // succeeds against a COMPLETELY EMPTY database. On 2026-10-03 that made a
+    // 7-hour outage invisible: every Prisma-backed route was returning 500 with
+    // `relation "public.User" does not exist`, while this endpoint reported
+    // `database: ok` throughout and nothing alerted.
+    //
+    // So also assert the schema is actually there. `_prisma_migrations` is the
+    // cheapest honest signal: it only exists once `migrate deploy` has run, and a
+    // zero finished count means the database is unusable.
+    try {
+      const rows = await prisma.$queryRaw<{ finished: bigint }[]>`
+        SELECT count(*) AS finished FROM "_prisma_migrations" WHERE finished_at IS NOT NULL
+      `;
+      const finished = Number(rows[0]?.finished ?? 0);
+      checks.schema =
+        finished > 0
+          ? { ok: true }
+          : { ok: false, error: "no applied migrations — run prisma migrate deploy" };
+    } catch (err) {
+      // A missing `_prisma_migrations` relation means the schema was never
+      // deployed, or the database was emptied. Either way the app cannot serve a
+      // single query, and saying so is the entire point of this check.
+      checks.schema = { ok: false, error: (err as Error).message };
+    }
+
     try {
       const pong = await getRedis().ping();
       checks.redis = { ok: pong === "PONG" };

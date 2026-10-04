@@ -43,9 +43,18 @@ Defences in place:
    "Database schema is up to date!" only when the database actually matches.
    Never treat the presence of a folder in `prisma/migrations/` as proof that a
    migration was applied.
-4. **Readiness surfaces it.** `/health/ready` runs a real query against Postgres
-   and returns 503 when it fails, so a broken schema shows up on the load
-   balancer before users do.
+4. **Readiness surfaces it.** `/health/ready` returns 503 when the database is
+   unreachable, **and** when the schema is absent. Both matter, and the second is
+   not hypothetical: on 2026-10-03 this check ran only `SELECT 1`, which succeeds
+   against a completely empty database. Every Prisma-backed endpoint then
+   returned 500 with `relation "public.User" does not exist` for seven hours while
+   `/health/ready` reported `database: ok` and nothing alerted. `SELECT 1` proves
+   a socket, not a schema. The endpoint now issues a second query against
+   `_prisma_migrations` and reports it as a separate `schema` check, so an
+   un-deployed or emptied database is a 503 instead of a silent failure. **When
+   you add a dependency check here, make sure it can actually fail against a
+   broken-but-reachable dependency** — that is precisely what the old one could
+   not do.
 5. **Deploy order.** `migrate deploy` runs *before* the new processes start. The
    additive-migration rule below makes that safe.
 
