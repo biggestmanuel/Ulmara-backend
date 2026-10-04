@@ -141,10 +141,24 @@ beforeEach(async () => {
   // so a missing stub cannot masquerade as a 500 under load.
   dbMock.session.create.mockResolvedValue({ id: "s-new", userId: USER_ID });
 
-  // A real Redis: the limiter and the lockout both store state there, and a
-  // fake would not exercise the atomic compare-and-set that makes them correct.
+  // A real Redis connection, because `buildApp` registers the websocket
+  // publisher and the queues against it and they must close cleanly.
+  //
+  // There is deliberately NO `flushdb()` here. It used to be called, and it was
+  // destructive to other suites rather than useful to this one:
+  //   - the rate limiter is in-memory (@fastify/rate-limit defaults to
+  //     LocalStore; no `redis` option is passed in rateLimit.middleware.ts), and
+  //     `app` is rebuilt in this beforeEach, so its counters are already fresh;
+  //   - the PIN lockout is persisted through `prisma.user.updateMany`, not Redis,
+  //     and `pinLockoutService.reset` below clears exactly this suite's user.
+  // So it reset nothing it owned while deleting every other suite's data in the
+  // shared database. That produced a ~1-in-4 flake in
+  // verificationCodeStore.test.ts: under file-parallel vitest this suite's
+  // `flushdb()` landed mid-test there and the OTP record vanished, so
+  // `verifyVerificationCode` returned "no_code" for a code created moments
+  // earlier. db 1 is also the database the running dev API uses, so it could
+  // delete a real user's pending verification code.
   redis = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379", { maxRetriesPerRequest: 3 });
-  await redis.flushdb();
   await pinLockoutService.reset(USER_ID).catch(() => undefined);
   resetRooms();
 

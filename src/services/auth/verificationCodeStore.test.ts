@@ -26,11 +26,31 @@ function userId(label: string): string {
   return `${NAMESPACE}-${label}`;
 }
 
-/** Scans and deletes only this run's keys. */
+/**
+ * Scans and deletes only THIS run's keys.
+ *
+ * The pattern must include the run namespace. It used to be the bare
+ * `ulmara:otp:*`, which matched every OTP key in the database — including those
+ * of a concurrently running copy of this suite, and those of a live API pointed
+ * at the same Redis. Two concurrent copies of this file deleted each other's
+ * records mid-test, which surfaced as a ~1-in-6 flake where
+ * `verifyVerificationCode` returned "no_code" for a code that had just been
+ * created. Redis db 1 is shared with the running dev API, so this was a real
+ * cross-process hazard and not only a test-versus-test one.
+ *
+ * No glob-escaping is needed: NAMESPACE is `test-otp-<pid>-<ms>`, built from a
+ * pid and a timestamp, so it contains no wildcard characters.
+ */
 async function cleanup(): Promise<void> {
   let cursor = "0";
   do {
-    const [next, keys] = await redis.scan(cursor, "MATCH", "ulmara:otp:*", "COUNT", 500);
+    const [next, keys] = await redis.scan(
+      cursor,
+      "MATCH",
+      `ulmara:otp:*-${NAMESPACE}-*`,
+      "COUNT",
+      500,
+    );
     cursor = next;
     if (keys.length > 0) await redis.del(...keys);
   } while (cursor !== "0");
