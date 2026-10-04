@@ -1,6 +1,7 @@
 import type { FastifyError, FastifyRequest, FastifyReply } from "fastify";
 import { logger } from "../config/logger.js";
 import { captureError, isSentryEnabled } from "../config/sentry.js";
+import { HttpError } from "../utils/apiResponse.js";
 
 /**
  * Fallback for errors that escape controller try/catch (framework errors,
@@ -40,7 +41,12 @@ export function errorHandler(error: FastifyError, request: FastifyRequest, reply
     success: false,
     message:
       statusCode >= 500
-        ? "Something went wrong. Please try again."
+        ? // Same rule as utils/apiResponse.handleError: an HttpError is a
+          // deliberately-worded, user-facing message and must survive a 5xx; an
+          // arbitrary thrown Error may carry internals and must not.
+          error instanceof HttpError
+          ? error.message
+          : "Something went wrong. Please try again."
         : error.message || "Request failed",
   });
 }

@@ -1,5 +1,6 @@
 import { prisma } from "../../config/database.js";
 import { generateAccountId } from "../../utils/generateAccountId.js";
+import { HttpError } from "../../utils/apiResponse.js";
 import type { Chain } from "@prisma/client";
 
 export const accountService = {
@@ -29,9 +30,10 @@ export const accountService = {
         return prisma.accountId.create({ data: { accountId: candidate, userId } });
       }
     }
-    throw Object.assign(new Error("Could not generate a unique Account ID, try again"), {
-      statusCode: 500,
-    });
+    // User-safe copy, so it is an HttpError: handleError surfaces a 5xx message
+    // only for that class, and this one tells the caller to retry rather than
+    // leaving them with "Something went wrong".
+    throw new HttpError(500, "Could not generate a unique Account ID, try again");
 
     // NOTE: this does NOT create Wallet rows for the 7 chains. Doing that safely
     // requires a real key-generation/custody design (HD wallet derivation + secure

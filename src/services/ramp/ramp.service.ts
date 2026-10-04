@@ -5,6 +5,7 @@ import { logger } from "../../config/logger.js";
 import { reportError } from "../../config/sentry.js";
 import { rampQueue } from "../../queues/ramp.queue.js";
 import { isUniqueConstraintViolation } from "../../utils/prismaError.js";
+import { HttpError } from "../../utils/apiResponse.js";
 import {
   assertValidNgnAmount,
   getRampProvider,
@@ -24,8 +25,14 @@ import {
  * Nothing below branches on which provider is live.
  */
 
+// HttpError, not a plain Error with a statusCode property: it is how the
+// codebase marks a message as deliberately written for the user, and
+// handleError only surfaces a 5xx message when the error is an HttpError. The
+// previous Object.assign form made every one of these deliberate messages
+// unreachable — a 503 whose text explained the outage reached the client as
+// "Something went wrong".
 function fail(statusCode: number, message: string): never {
-  throw Object.assign(new Error(message), { statusCode });
+  throw new HttpError(statusCode, message);
 }
 
 /** Provider status -> our enum. */

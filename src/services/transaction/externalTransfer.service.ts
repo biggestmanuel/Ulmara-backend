@@ -8,6 +8,7 @@ import { pinLockoutService } from "../auth/pinLockout.service.js";
 import { transactionService } from "./transaction.service.js";
 import { transactionQueue } from "../../queues/transaction.queue.js";
 import { logger } from "../../config/logger.js";
+import { HttpError } from "../../utils/apiResponse.js";
 import { isUniqueConstraintViolation } from "../../utils/prismaError.js";
 import { toBaseUnits } from "../../utils/money.js";
 
@@ -28,8 +29,14 @@ const NATIVE_ASSETS: Record<string, string> = {
   BTC: "BTC",
 };
 
+// HttpError, not a plain Error with a statusCode property: it is how the
+// codebase marks a message as deliberately written for the user, and
+// handleError only surfaces a 5xx message when the error is an HttpError. The
+// previous Object.assign form made every one of these deliberate messages
+// unreachable — a 503 whose text explained the outage reached the client as
+// "Something went wrong".
 function fail(statusCode: number, message: string): never {
-  throw Object.assign(new Error(message), { statusCode });
+  throw new HttpError(statusCode, message);
 }
 
 export interface PrepareExternalTransferInput {
