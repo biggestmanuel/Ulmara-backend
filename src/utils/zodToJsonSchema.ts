@@ -13,9 +13,12 @@ import { z } from "zod";
  *     the OpenAPI side wants the wire shape. The settings below describe what a
  *     request body actually looks like on the wire.
  *
- *  2. **It fails loudly.** If a schema cannot be converted, the generator
- *     throws instead of emitting `{}`. A silently empty schema in a published
- *     document is worse than a build failure, because it looks valid.
+ *  2. **It fails loudly when the converter itself is missing.** If zod exposes no
+ *     `toJSONSchema`, the generator throws rather than emitting a document that
+ *     looks valid but describes nothing. (Note this is the *converter* being
+ *     absent, not an individual schema being unrepresentable — see
+ *     `unrepresentable` below for that case, which is tolerated rather than
+ *     fatal.)
  */
 
 export interface ToJsonSchemaOptions {
