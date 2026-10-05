@@ -502,19 +502,38 @@ Everything below was exercised against this running server, not assumed:
 
 | | |
 |---|---|
-| Backend branch | `hardening-2026-09-30` at `b8a0b86`, **pushed**, CI green |
+| Backend branch | `hardening-2026-09-30` at `49abfe1`, **pushed**, both CI jobs green |
 | Backend `main` | untouched at `0aa0250` — nothing merged |
 | PR | #1 open, green on every pushed commit |
-| Tests | `npm run verify:all` → exit 0, **42 files / 673 tests** |
-| Migration rehearsal | PASSED, empty schema/migration diff (`PG_PORT=5435 npm run verify:migrations`) |
-| Neon | up to date. `20261001120000_payment_request_note` applied; the two ramp migrations were **already applied**, so only one was ever pending |
+| Tests | `npm run verify:all` → exit 0, **50 files / 781 tests** |
+| End-to-end | **154 assertions** against the live server on `:4100`, 0 real failures (section 15) |
+| Migration rehearsal | PASSED, empty schema/migration diff (`PG_PORT=5436 npm run verify:migrations`) |
+| Chain harnesses | `verify:tokens` 3/3 live, `verify:solana` all checks, `verify:providers` 1 verified / 3 skipped for missing credentials |
+| Audit | `npm audit` → 0 vulnerabilities |
 
 Frontend side, for reference: `avora-frontend` `main` at `c3428ce`, pushed,
-351 assertions green.
+351 assertions green. A read-only conformance audit of all 41 backend paths it
+calls is in section 15.
 
-### Backend commits since the fix-phase baseline `8421487` (12)
+### Backend commits since the fix-phase baseline `8421487` (28)
 
 ```
+49abfe1 fix(load): a load test was failing on the app's own healthy queue
+eb56084 fix(http): answer a router 404 in the same error envelope as everything else
+fee21ce fix(env): make the 5434 guard message accurate, and give it a self-test
+a26f461 docs: record that request bodies live in requestSchemas.ts
+95bfc62 feat(openapi): document the request body of every route that takes one
+2008250 test(account): cover the settings service whose contract this pass changed
+e6fc5eb chore(env): make verify-env.sh directly executable
+8202fd8 fix(health): readiness must prove the schema, not just the socket
+c2a932d fix(errors): stop discarding deliberate 5xx messages
+9a6394a test(utils): cover the OpenAPI generator, and correct its doc comment
+e74971f test: fix a 1-in-4 flake caused by two suites sharing Redis
+f1bf200 test: fix two lint/type errors CI caught in the new suites
+7758dcc test(jobs): cover the transaction worker, the file that moves money
+6840535 test(blockchain): cover address verification, which had none
+e918312 docs: record the set-pin and nullable-settings contracts
+9c1cf5e fix(deps): fastify 5.12.4 -> 5.12.5 for GHSA-4mh8-r7rc-xpvc
 b8a0b86 fix(auth): rate-limit set-pin, and let the rehearsal script move ports
 bffceae fix(auth): a PIN can be set once, never overwritten without the current one
 323b416 fix(account): let null clear a nullable setting
