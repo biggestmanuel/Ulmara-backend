@@ -409,6 +409,30 @@ Verified live on `ETH`, `BSC` and `SOL` — all `200` with real balances. The
 frontend's own `TokenBalance` type already matches the response exactly, so
 switching it over is a deletion, not a rewrite.
 
+### ⚠️ Signing out must call `POST /api/auth/logout`
+
+**New.** The app's logout is local only — it deletes the token from the device's
+keystore and never tells the server. Because `requireAuth` treats the `Session`
+row as the source of truth, the token kept working for its full 7-day life after
+the user had signed out. Verified on the live server before the route existed:
+
+```
+GET  /api/account/me        -> 200      POST /api/payment/request -> 201
+GET  /api/transaction      -> 200      GET  /api/contact         -> 200
+```
+
+```jsonc
+POST /api/auth/logout   // no body; the session is identified by the token
+  → 200 { "success": true }
+  → 401 on a second call (requireAuth rejects the dead token first)
+```
+
+It revokes **only** the calling session, so signing out on a phone leaves the
+other devices signed in. Transfers were never reachable with a stolen token — the
+PIN gate is independent — but balances, contacts and payment-request creation
+were, for a week. `DELETE /api/auth/me` is no longer the only way out, so signing
+out no longer means deleting the account.
+
 ### Errors are always `{ "success": false, "message": "…" }` — including a 404
 
 Every error the frontend can receive, in one shape. That matters because

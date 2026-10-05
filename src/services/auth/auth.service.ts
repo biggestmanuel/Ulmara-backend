@@ -379,9 +379,56 @@ export const authService = {
       fail(404, "Session not found");
     }
     if (session.token === currentToken) {
-      fail(400, "Cannot revoke your current session — log out instead");
+      fail(400, "Cannot revoke your current session — use POST /api/auth/logout to sign out");
     }
     await prisma.session.delete({ where: { id: sessionId } });
+    return { success: true };
+  },
+
+  /**
+   * End the caller's OWN session, and only that one.
+   *
+   * This route existed nowhere, and that was a security hole rather than a
+   * missing convenience. The client's logout is purely local — it wipes the
+   * token from the device's keystore — so nothing ever told the server the
+   * session was over. The `Session` row survived, and because `requireAuth`
+   * treats the row as the source of truth, the token stayed valid for its full
+   * `JWT_EXPIRES_IN` (7 days by default) after the user believed they had
+   * signed out. Measured on the live server: after a local-only logout the same
+   * token still answered 200 on /api/account/me, /api/transaction and
+   * /api/contact, and still created a payment request (201).
+   *
+   * Transfers were not reachable with it — the PIN gate is independent of the
+   * session, and a PIN cannot be replaced through a session token alone — but
+   * balances, contacts and payment requests were all readable and creatable for
+   * a week from a token the user believed was dead. That is the window a lost or
+   * wiped phone actually leaves behind.
+   *
+   * `deleteAccount` (`DELETE /api/auth/me`) was the only server-side way to kill
+   * a session, and it deletes the user. Signing out must not require destroying
+   * the account, so this is the missing third option between "revoke another
+   * device" and "delete everything".
+   *
+   * Scoped to the one session on purpose: logging out on a phone must not sign
+   * the user out of their other devices, which is what `revokeSession` is for.
+   * Deleting by token rather than by id also means this needs no request body and
+   * cannot be pointed at somebody else's session.
+   *
+   * Idempotent AT THE SERVICE LEVEL: a token with no row is a success, not an
+   * error. End to end a second call answers 401, because `requireAuth` rejects
+   * the now-dead token before this runs. That is the right answer for a logout —
+   * it is what the client's own 401 handling expects, and it leaves the user
+   * signed out either way — but it is worth stating, because "logout is
+   * idempotent" is otherwise read as "you can call it twice and get 200 both
+   * times", which is not what happens.
+   */
+  async logout(currentToken: string) {
+    // Delete by token, not by userId: a broad delete would end every device.
+    const { count } = await prisma.session.deleteMany({ where: { token: currentToken } });
+    logger.info(
+      { event: "session_ended", removed: count },
+      count > 0 ? "Session ended by logout" : "Logout on an already-ended session",
+    );
     return { success: true };
   },
 };

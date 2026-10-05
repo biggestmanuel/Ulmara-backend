@@ -48,6 +48,15 @@ export function authRoutes(app: FastifyInstance) {
   app.post("/change-pin", { preHandler: [requireAuth, changePinLimit.preHandler] }, authController.changePin);
   app.get("/sessions", { preHandler: [requireAuth, sessionListLimit.preHandler] }, authController.listSessions);
   app.delete("/sessions/:id", { preHandler: requireAuth }, authController.revokeSession);
-  // Permanent account deletion — must come after /sessions routes.
+  // Ends THIS session only. The client's own logout is local — it deletes the
+  // token from the keystore — so without this the session row survived and the
+  // token stayed valid for the full JWT_EXPIRES_IN after the user had signed
+  // out. DELETE /me was the only server-side way to kill one, and it deletes the
+  // account, so signing out currently costs a user their account.
+  //
+  // Not rate limited: it only ever shortens the caller's own access, so there is
+  // nothing to brute-force and nothing to gain from hammering it.
+  app.post("/logout", { preHandler: requireAuth }, authController.logout);
+  // Permanent account deletion — must come after /sessions and /logout routes.
   app.delete("/me", { preHandler: requireAuth }, authController.deleteAccount);
 }

@@ -210,6 +210,16 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     auth: true,
     params: [{ name: "id", schema: idParamSchema.shape.id, description: "Session id (UUID)." }],
   },
+  "POST /api/auth/logout": {
+    summary: "End the current session",
+    description:
+      "Revokes only the session that made the request, so signing out on one device leaves the " +
+      "others alone. Idempotent, and takes no body: the session is identified by the bearer token. " +
+      "Clients MUST call this on sign-out — deleting the token from the device alone leaves it " +
+      "valid on the server until it expires.",
+    tags: ["auth"],
+    auth: true,
+  },
   "DELETE /api/auth/me": {
     summary: "Permanently delete the account",
     tags: ["auth"],

@@ -135,6 +135,17 @@ export const authController = {
     }
   },
 
+  async logout(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const authHeader = request.headers.authorization!;
+      const currentToken = authHeader.slice(7);
+      const result = await authService.logout(currentToken);
+      return reply.code(200).send(successResponse(result));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
   async deleteAccount(request: FastifyRequest, reply: FastifyReply) {
     try {
       const result = await authService.deleteAccount(request.userId!);

@@ -38,6 +38,7 @@ const LIVE_ROUTES: LiveRoute[] = [
   { method: "POST", url: "/api/auth/change-pin" },
   { method: "GET", url: "/api/auth/sessions" },
   { method: "DELETE", url: "/api/auth/sessions/:id" },
+  { method: "POST", url: "/api/auth/logout" },
   { method: "DELETE", url: "/api/auth/me" },
   { method: "GET", url: "/api/account/me" },
   { method: "POST", url: "/api/account/create-account-id" },
@@ -248,6 +249,9 @@ describe("request bodies are attached to routes that take one", () => {
     // Genuinely bodyless. A body here would be a lie about the contract.
     "POST /api/account/create-account-id",
     "POST /api/wallet/resolve/:accountId",
+    // The session is identified by the bearer token, so there is nothing to send.
+    // A client that POSTed a body here would be ignored, not validated.
+    "POST /api/auth/logout",
     // The provider's own payload, read RAW for signature verification. It is
     // deliberately not modelled as a zod schema — see the entry's description.
     "POST /api/ramp/webhook",
@@ -260,7 +264,7 @@ describe("request bodies are attached to routes that take one", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("every body-taking route declares a body, except the three that take none", () => {
+  it("every body-taking route declares a body, except the four that take none", () => {
     const missing = Object.keys(ROUTE_DOCS).filter(
       (route) => /^(POST|PATCH|PUT) /.test(route) && !ROUTE_DOCS[route].body && !bodyless.has(route),
     );
@@ -273,7 +277,7 @@ describe("request bodies are attached to routes that take one", () => {
     }
   });
 
-  it("the three bodyless entries really are bodyless in their own right", () => {
+  it("the bodyless entries really are bodyless in their own right", () => {
     // A guard on the guard: if someone adds a body to one of these, the
     // exemption above has to be removed deliberately rather than by accident.
     for (const route of bodyless) {
