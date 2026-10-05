@@ -16,6 +16,32 @@
 # database:   npm run verify:env
 set -uo pipefail
 
+# `--self-test` proves the guard still refuses what it is supposed to refuse.
+# A guard with no test rots silently: a well-meaning refactor can turn a refusal
+# into a pass and the next session would never find out.
+if [ "${1:-}" = "--self-test" ]; then
+  SELF="postgresql://u:p@127.0.0.1:5439/x"   # deliberately wrong on every axis
+  pass=0; fail=0
+  check() { # description, expect(0|1), url
+    local want="$2" got
+    DATABASE_URL="$3" bash "$0" >/dev/null 2>&1; got=$?
+    if [ "$got" = "$want" ]; then
+      printf '  [  ok  ] %s\n' "$1"; pass=$((pass + 1))
+    else
+      printf '  [ FAIL ] %s (wanted exit %s, got %s)\n' "$1" "$want" "$got"; fail=$((fail + 1))
+    fi
+  }
+  echo "=== verify-env self-test ==="
+  check "refuses a remote host"            1 "postgresql://u:p@db.example.com/prod"
+  check "refuses the shared 5434 container" 1 "postgresql://u:p@127.0.0.1:5434/x"
+  check "refuses another project's 5433"   1 "postgresql://u:p@127.0.0.1:5433/x"
+  echo
+  echo "  $pass passed / $fail failed"
+  [ "$fail" -eq 0 ] || exit 1
+  echo "  (the live-config case is covered by: npm run verify:env)"
+  exit 0
+fi
+
 fail=0
 ok()   { printf '  [  ok  ] %s\n' "$1"; }
 bad()  { printf '  [ FAIL ] %s\n' "$1"; fail=$((fail + 1)); }
@@ -59,20 +85,23 @@ case "$DB_HOST" in
 esac
 
 echo
-echo "=== 3. it is this project's own container, not the shared one ==="
+echo "=== 3. it is this project's own container, not a shared one ==="
 # avora-fe-pg was stopped deliberately. Starting it again re-creates the exact
 # condition that caused the outage, so treat pointing at it as an error.
 case "${DB_HOST}:${DB_PORT}" in
   *:5434)
-    bad "port 5434 is the STOPPED shared container avora-fe-pg — refusing"
-    echo "         Ulmara's own database is ulmara-pg on 5435."
-    echo "         Start it with: docker start ulmara-pg" ;;
+    bad "port 5434 is avora-fe-pg, the container that was SHARED with another project — refusing"
+    echo "         It is not a matter of whether it is running. Another project's"
+    echo "         harness ran DROP DATABASE against it on 2026-10-03 and took"
+    echo "         ulmara_fe_test with it. Sessions have restarted it since; that"
+    echo "         does not make it safe for this project."
+    echo "         Ulmara's own database is ulmara-pg on 5435 (docker start ulmara-pg)." ;;
   *:5433)
     bad "port 5433 is held by another project's container (unimap-db) — refusing"
     echo "         That is how the migration rehearsal used to fail here."
     echo "         If you meant Ulmara: ulmara-pg is on 5435." ;;
   *)
-    ok "not one of the known-wrong ports (5433 shared, 5434 stopped)" ;;
+    ok "not one of the known-wrong ports (5433 and 5434 are other containers)" ;;
 esac
 
 echo
