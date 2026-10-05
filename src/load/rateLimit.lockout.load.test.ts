@@ -205,6 +205,24 @@ async function burst(
   };
 }
 
+/**
+ * Collect keys matching `pattern` with SCAN, never `KEYS`.
+ *
+ * `KEYS` is O(N) over the whole keyspace and blocks the Redis server while it
+ * runs, which is a real hazard against a shared instance. SCAN is incremental
+ * and safe to point at a live database.
+ */
+async function scanKeys(pattern: string): Promise<string[]> {
+  const found: string[] = [];
+  let cursor = "0";
+  do {
+    const [next, batch] = await redis.scan(cursor, "MATCH", pattern, "COUNT", 200);
+    cursor = next;
+    found.push(...batch);
+  } while (cursor !== "0");
+  return found.sort();
+}
+
 const loginRequest = () => ({
   method: "POST" as const,
   url: "/api/auth/login",
@@ -415,16 +433,53 @@ describe("no secrets in logs under load", () => {
 });
 
 describe("Redis state and connection hygiene under load", () => {
-  it("leaves no malformed keys behind", async () => {
+  /**
+   * This used to be `redis.keys("*")` followed by a type check on every key in
+   * the database, asserting that a burst "leaves no malformed keys behind".
+   *
+   * That could only ever observe other processes' data. This suite writes NO
+   * Redis keys of its own — the limiter is in-memory (`LocalStore`; no `redis`
+   * option is passed) and the PIN lockout is persisted through
+   * `prisma.user.updateMany` — so the keys it inspected were exclusively the
+   * live dev API's and the other suites'. The check was vacuous about its own
+   * subject and live about everyone else's, which is the same defect as the
+   * `flushdb()` removed above, minus the destruction.
+   *
+   * It failed in practice, and the failure was the diagnosis: with the BullMQ
+   * worker running, `bull:transactions:events` is a **stream**, which was not in
+   * the hardcoded allow-list. The suite was failing because the application's
+   * own queue was healthy.
+   *
+   * Replaced with a claim that is true, specific and hermetic: the limiter
+   * writes nothing to Redis. If anyone passes a Redis store to `@fastify/
+   * rate-limit`, its default key prefix (`fastify-rate-limit-`, see the package's
+   * `store/RedisStore.js`) starts appearing, and this fails.
+   */
+  it("writes no rate-limit keys to Redis — the limiter is in-memory", async () => {
     await burst(50, loginRequest);
-    const keys = await redis.keys("*");
-    for (const key of keys) {
-      // A half-written set or hash from an interrupted update would show up
-      // here as an unexpected type.
-      const type = await redis.type(key);
-      expect(["string", "hash", "list", "set", "zset", "none"], `${key} (${type})`).toContain(type);
-    }
-    console.log(`  ${keys.length} Redis keys after the burst, all of a well-formed type`);
+    const limiterKeys = await scanKeys("fastify-rate-limit-*");
+    expect(
+      limiterKeys,
+      "the rate limiter is holding its counters in Redis, not in memory. That is a " +
+        "deliberate architecture decision (no `redis` option is passed to " +
+        "@fastify/rate-limit), and a shared Redis would make one process's budget " +
+        "depend on another. If this is intended, update this test deliberately.",
+    ).toEqual([]);
+  });
+
+  /**
+   * Proves the connection survives a burst: a full write/read/type/delete cycle
+   * on a key this run owns, and the only `DEL` in this file targets a key it
+   * just created.
+   */
+  it("the connection still round-trips after the burst", async () => {
+    await burst(30, loginRequest);
+    const probe = `ulmara:loadtest:probe:${process.pid}:${Date.now()}`;
+    await redis.set(probe, "1");
+    expect(await redis.get(probe)).toBe("1");
+    expect(await redis.type(probe)).toBe("string");
+    await redis.del(probe);
+    expect(await redis.exists(probe)).toBe(0);
   });
 
   it("closes cleanly, with nothing left listening", async () => {
