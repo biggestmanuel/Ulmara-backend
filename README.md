@@ -118,6 +118,19 @@ accounts, testnet balances, and the container/port layout.
 
 ## API documentation
 
+`GET /docs/json` is generated from the live route table, and 23 of the 47
+operations publish a full request-body schema. It is worth reading before coding
+against an endpoint: `POST /api/transaction/send` states that the field is
+`network` (not `chain`), that `idempotencyKey` is required, and that unknown keys
+are rejected — all things a client otherwise discovers by getting a 400.
+
+Request **body** schemas live in `src/utils/requestSchemas.ts`, not beside their
+handler. `openapi.ts` cannot import a controller without dragging Prisma and
+Redis into the spec tests, so a body defined locally is invisible to the
+document. Add it there and reference it from `ROUTE_DOCS`.
+
+
+
 Set `ENABLE_API_DOCS=true` and restart:
 
 | route | what it is |
