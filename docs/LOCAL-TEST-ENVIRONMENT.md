@@ -346,9 +346,11 @@ POST /api/ramp/withdraw { "amountNgn": "5000", "accountNumber": "0123456789",
                           "bankCode": "058", "accountName": "…" }
 ```
 
-⚠️ Both currently return **503** with a generic *"Something went wrong. Please
-try again."* There are no Bitnob/YELLOW_CARD credentials in this environment. It
-is a clean 503, not a crash, but the message is unhelpful — see known issues.
+⚠️ Both currently return **503** because there are no Bitnob/YELLOW_CARD
+credentials in this environment. It is a clean 503, not a crash, and the message
+now names the real reason — `Naira deposits are temporarily unavailable. Please
+try again shortly.` (it used to be the generic *"Something went wrong. Please
+try again."*; that was the `HttpError`-message fix).
 
 **Token balances** — `chain` is **case-sensitive and UPPERCASE**:
 
@@ -361,6 +363,33 @@ A chain that cannot be reached yields an **empty list, not an error**. TON
 returns `[]` here. Rows carry `symbol`, `name`, `chain` (lower-case ChainId),
 `network` (UPPERCASE), `decimals`, `contractAddress`, `balance` (exact decimal
 string).
+
+**This endpoint works and returns live balances.** `lib/api/tokens.ts` in the
+frontend still carries the comment *"The backend does not implement it today, so
+balances are read with one `eth_call` per token"* and falls back to direct RPC.
+Verified live on `ETH`, `BSC` and `SOL` — all `200` with real balances. The
+frontend's own `TokenBalance` type already matches the response exactly, so
+switching it over is a deletion, not a rewrite.
+
+### Errors are always `{ "success": false, "message": "…" }` — including a 404
+
+Every error the frontend can receive, in one shape. That matters because
+`lib/api/client.ts` **only shows the server's message when the body is exactly
+`{ success: false, message }`**; anything else is replaced with generic per-status
+copy.
+
+```jsonc
+{ "success": false, "message": "Incorrect PIN. Try again." }
+```
+
+A router 404 used to break this rule — Fastify's router rejects an unmatched path
+itself, so it never reached the error handler and answered `{ "message": "Route
+GET:/x not found", "error": "Not Found", "statusCode": 404 }` with no `success`
+key. A typo'd path, and a wrong verb on a real path, both reached the user as the
+generic *"Not found. Please check the details and try again."* **Fixed:** every
+404 now uses the envelope, e.g.
+`{"success":false,"message":"Route GET:/api/auth/login not found"}`.
+
 
 ## 8. ⚠️ `GET /api/account/me` returns accountId as an OBJECT
 
@@ -417,9 +446,10 @@ right**. Keep it. Clear with explicit `null`, never `""`.
 `onboarding@resend.dev` only delivers to the account owner. Blocks real-user
 signup testing. **Blocked on buying a domain**, not on code.
 
-**2. Ramp returns an unhelpful 503.** Correct status, but
-`"Something went wrong. Please try again."` tells the user nothing. The log has
-the real reason (`ramp_provider_unavailable`). Blocked on provider credentials.
+**2. Ramp returns a 503 with no provider behind it.** The status and the message
+are now both right (*"Naira deposits are temporarily unavailable. Please try
+again shortly."*); the log carries `ramp_provider_unavailable`. Blocked on
+Bitnob/YELLOW_CARD credentials.
 
 **3. TON and BTC balances are `null`.** TON: no reachable public testnet RPC
 from this host. BTC: no `BTC_RPC_URL`, and the adapter raises
@@ -512,7 +542,72 @@ dd280ea B2: treat an empty JSON body as no body, at the parser
 
 ## 14. Not yet exercised by anyone
 
-- `/api/validation/address` (needs TriVerify credentials)
 - the full OTP flow end-to-end via a genuinely different address (blocked by
   section 6, so use `devVerificationCodes`)
 - `/api/ramp/*` beyond confirming the 503
+- a real push notification — there is no push route at all (section 15)
+
+## 15. Frontend ⇄ backend conformance audit
+
+Every path `lib/api/*` in `avora-frontend` actually calls, checked against the
+live server on `:4100`. **The frontend is in good shape: no broken endpoint, no
+wrong field name.** The mismatches are all frontend-side or documentation-side,
+and are listed here so nobody re-derives them.
+
+### Verified correct — the frontend already matches
+
+| Thing | Why it was worth checking |
+|---|---|
+| `POST /api/transaction/send` takes **`network`**, `external/prepare` takes **`chain`** | Two conventions for one concept. The frontend uses each on the right route. |
+| `external/:id/submit` takes **`signedTransaction`**, `/:id/broadcast` takes **`signedTx`** | Deliberate asymmetry; `signedTx` on submit is a `400`. |
+| `me.accountId.accountId` (nested object) | The `[object Object]` trap — handled. |
+| `POST /api/payment/request` → `{ requestId, link }`; the public GET is keyed `id` | The `requestId` is discarded by the pay screen, which uses the router param. Fine. |
+| `wallet/register` needs **all 8 chains** | `400 Missing address(es) for required chain(s): …` otherwise. The frontend registers all 8. |
+| `external/prepare` needs a **registered wallet on that chain** | `400 You have no wallet on ETH` otherwise. Correct, and the frontend registers first. |
+| `POST /api/payment/request/:id/fulfill` **exists** | A `404` for a made-up id is the service, not a missing route. |
+| `DELETE /api/contact/:id` works with **and** without a body | The frontend's `{}` is harmless; its comment saying it is required is stale. |
+| `PATCH /api/account/settings` with `null` clears, omitting does not | Matches the frontend's `SettingsPatch` exactly. |
+| PIN error strings: `Incorrect PIN. Try again.` / `Too many incorrect PIN attempts. Try again in 15 minutes.` | `client.ts` string-matches these two prefixes to tell a dead session from a mistyped PIN. **Rewording either one makes the app log the user out on a wrong PIN.** |
+| `GET /api/account/resolve/:accountId`, `GET /api/wallet/tokens/:chain`, `POST /api/auth/forgot-password`, `DELETE /api/auth/sessions/:id`, `POST /api/auth/verify-phone` | All exist and answer correctly. |
+
+### Frontend-side issues (not ours to change — recorded for the FE owner)
+
+1. **No fallback for `EXPO_PUBLIC_API_BASE_URL`** (`lib/api/client.ts:4`). No `??`,
+   no default. If the env var is missing, every request resolves against the app's
+   own origin and fails with no useful diagnostic.
+2. **A doomed push-token POST on every cold start and every logout.**
+   `POST /api/push/token` and `DELETE /api/push/token` are `404`. The
+   `EXPO_PUBLIC_PUSH_REGISTRATION` flag is declared but not checked at those call
+   sites, and the `backendUnsupported` guard only trips *after* the first request.
+3. **The user's name can never be set.** `signup` **rejects** `name` and
+   `fullName` with `400 input: Unrecognized key`. The only way to set a name is
+   `PATCH /api/account/settings { "name": … }`, and the preferences screen only
+   ever sends `{ defaultCurrency }`. So the name collected on the signup form is
+   collected, validated, rendered — and dropped.
+4. **Only the transactions store logs out on a 401** (`stores/txStore.ts`). A 401
+   from any other endpoint clears only the in-memory token, leaving the app on a
+   stale screen with a SecureStore token still present. There is no refresh token
+   and no retry anywhere.
+5. **`normalizeTransaction` is duplicated by hand** in `externalTransfers.ts`, and
+   it silently defaults `direction` to `'sent'` and `fee` to `'0'` — an inbound
+   transfer with no `direction` renders as outgoing, and a missing fee renders as
+   a free transfer.
+
+### Backend behaviour that is deliberate, not a bug
+
+- **`defaultCurrency` accepts any 3-letter code** (`"XYZ"` → `200`). It is
+  `z.string().trim().length(3).toUpperCase()`, a shape, not an enum. The frontend
+  must own the currency list and fall back on an unknown code.
+- **The transaction list has no status filter.** `paginationQuerySchema` accepts
+  `page` and `limit` only, and it is a strict object, so `?status=COMPLETED` is
+  `400 input: Unrecognized key: "status"`. Filtering happens client-side.
+- **`POST /api/validation/address` answers 200 for a malformed address** and
+  reports `{ "formatValid": false, "exists": false }`. It is a checker, not a
+  parser. The `chain` is still strict: `chain: "eth"` is a `400`.
+- **An already-verified email makes `verify-email` idempotent** — any code, even
+  `000000`, returns `200`. A wrong code on a *fresh* account is
+  `400 Invalid or expired verification code` and the account stays unverified
+  (checked directly).
+- **A wrong PIN is answered before the idempotency key is compared**, so a reused
+  key with a bad PIN is `401`, not `409`. Correct order — the credential is never
+  skipped.

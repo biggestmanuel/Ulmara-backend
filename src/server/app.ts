@@ -19,6 +19,7 @@ import { paymentRoutes } from "../routes/payment.routes.js";
 import { rampRoutes } from "../routes/ramp.routes.js";
 import { contactRoutes } from "../routes/contact.routes.js";
 import { errorHandler } from "../middleware/error.middleware.js";
+import { errorResponse } from "../utils/apiResponse.js";
 import { registerWebsocketHandlers } from "../websocket/socket.handler.js";
 import { startUserEventBridge } from "../websocket/emit.js";
 import { validationRoutes } from "../routes/validation.routes.js";
@@ -62,6 +63,28 @@ export async function buildApp(): Promise<FastifyInstance> {
     bodyLimit: 1_048_576,
   });
   app.setErrorHandler(errorHandler);
+
+  // A 404 is the one error that never reaches `setErrorHandler`: Fastify's
+  // router rejects an unmatched path itself, so the default handler answers
+  // `{ message: "Route GET:/x not found", error: "Not Found", statusCode: 404 }`
+  // — no `success` key, so it is NOT the envelope every other error uses.
+  //
+  // That is not cosmetic. The client only surfaces a server message when the
+  // body is exactly `{ success: false, message }` (`lib/api/client.ts`), so a
+  // typo'd path or a wrong method came back to the user as the generic
+  // "Not found. Please check the details and try again." with the actual cause
+  // discarded — while a real 404 from a service (an unknown transaction id)
+  // arrived in the envelope and read properly. Same status, same meaning, two
+  // different shapes, decided purely by which layer produced it.
+  //
+  // The method is included because "wrong verb on a real path" is the case worth
+  // naming: a client that should have POSTed learns the route exists and what it
+  // takes, which is not sensitive (the route table is published at /docs/json).
+  app.setNotFoundHandler((request, reply) => {
+    return reply
+      .code(404)
+      .send(errorResponse(`Route ${request.method}:${request.url} not found`));
+  });
 
   // B2: an empty body with `Content-Type: application/json` is accepted as no
   // body. axios sets that header on EVERY request, including the ones that send
