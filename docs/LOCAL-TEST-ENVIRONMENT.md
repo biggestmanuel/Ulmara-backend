@@ -20,28 +20,66 @@ Originally written 2 Oct 2026; **last verified 3 Oct 2026 against commit
 ## 1. Where it is
 
 ```
-Base URL   http://localhost:4100
+From this machine (WSL, or Windows via loopback):  http://127.0.0.1:4100
+From a phone on the same WiFi:                    http://<your-LAN-IP>:4100
 ```
 
-Also reachable as `http://127.0.0.1:4100`. Verified working from **Windows**
-(`curl.exe http://localhost:4100/health` → 200), so an Expo web browser on
-Windows can call it.
+**Not port 4000.** A Windows `svchost` (the WSL/Hyper-V networking relay) already
+holds `0.0.0.0:4000`. WSL's `ss` cannot see Windows listeners under mirrored
+networking, so this only appears as `EADDRINUSE` when the server tries to bind.
+Nothing was killed; the backend uses 4100 instead.
 
-**Not port 4000.** A Windows `svchost` (PID 7404, the WSL/Hyper-V networking
-relay) already holds `0.0.0.0:4000`. WSL's `ss` cannot see Windows listeners
-under mirrored networking, so this only appears as `EADDRINUSE` when the server
-tries to bind. Nothing was killed; the backend uses 4100 instead.
+### ⚠️ Run `npm run verify:net` before testing from a phone
 
-Set `EXPO_PUBLIC_API_BASE_URL=http://localhost:4100` in the frontend.
+The LAN address is assigned by DHCP and **it changes.** This machine was
+`192.168.1.9` and is now `192.168.1.5` again. Every address that has to be
+written down by hand — the frontend's `EXPO_PUBLIC_API_BASE_URL`, the CORS
+allowlist — was pointing at the old one, so the app would have failed with a bare
+*"Network request failed"* and no hint why.
 
-⚠️ **A physical phone on the LAN is NOT confirmed.** From Windows,
-`192.168.1.5:4100` returned `000` while WSL reached the same address with 200.
-The firewall profile is Private with four Node rules, so the cause is unverified
-and only a real device can settle it. If the phone cannot connect, run as admin:
+`npm run verify:net` checks all of it in one shot: the current LAN address, that
+the API is bound to `0.0.0.0` (so the LAN is covered at all), that it answers on
+that address, whether Windows has an inbound firewall rule for the port, and
+whether the frontend and the CORS allowlist agree with the address the machine
+actually has. It exits non-zero and prints the exact command to run.
+
+`EXPO_PUBLIC_*` values are **inlined into the bundle at build time**, so restart
+Expo after changing the `.env` or it keeps using the old value.
+
+### ⚠️ A phone on the LAN still needs one Windows-side action
+
+**Proven cause, not a guess:** from WSL, `http://192.168.1.5:4100/health` returns
+**200**, and the API is bound to `0.0.0.0:4100`, so the socket genuinely covers
+the LAN interface. From Windows, `netstat` shows **nothing** listening on 4100
+and both `192.168.1.5:4100` and a Windows-side `Invoke-WebRequest` to it time
+out — while `127.0.0.1:4100` returns 200. And:
 
 ```
-netsh advfirewall firewall add rule name="Ulmara API" dir=in action=allow protocol=TCP localport=4100
+Get-NetFirewallPortFilter | Where-Object LocalPort -eq 4100   ->  0 rules
 ```
+
+**There is no inbound firewall rule for 4100.** A previously-added rule is not
+present. Run this once, in an **administrator** PowerShell:
+
+```powershell
+New-NetFirewallRule -DisplayName 'Ulmara API 4100' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4100 -Profile Private
+```
+
+No `netsh interface portproxy` is needed: WSL is in **mirrored** networking mode
+(`/etc/wsl.conf`), so it shares the host's interfaces and a `0.0.0.0` listener is
+already on the LAN. (The stale `4000 → 172.28.24.76:4000` proxy rule is a NAT-mode
+leftover and is not what makes 4100 work.)
+
+### Which base URL to use
+
+| Testing on | `EXPO_PUBLIC_API_BASE_URL` |
+|---|---|
+| Android emulator on this machine | `http://10.0.2.2:4100` |
+| Expo web in a browser on this machine | `http://127.0.0.1:4100` |
+| A physical phone on the same WiFi | `http://192.168.1.5:4100` (re-check with `npm run verify:net`) |
+
+The CORS allowlist covers all of these origins for the current LAN address
+(`http://192.168.1.5:8081`, `:19000`, `:19001`, `:19002`, `:19006`, `:8082`).
 
 ## 2. Test accounts
 
