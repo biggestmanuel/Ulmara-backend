@@ -35,9 +35,30 @@ export const accountService = {
     // leaving them with "Something went wrong".
     throw new HttpError(500, "Could not generate a unique Account ID, try again");
 
-    // NOTE: this does NOT create Wallet rows for the 7 chains. Doing that safely
-    // requires a real key-generation/custody design (HD wallet derivation + secure
-    // key storage) which hasn't been decided yet — see chat notes.
+    // This deliberately creates NO Wallet rows. Ulmara is non-custodial and that
+    // decision is made and implemented, not pending: the client generates every
+    // key on the device (`lib/keyGeneration.ts` in avora-frontend — bip39
+    // mnemonics, one derivation path per chain), signs on the device
+    // (`lib/signing/`), and stores the phrases in the device keystore. It then
+    // registers the PUBLIC addresses here via `POST /api/wallet/register`, and
+    // those are the only address strings this service ever sees.
+    //
+    // This comment previously said the custody design "hasn't been decided yet".
+    // It had been, and leaving the stale wording in place was a live hazard: a
+    // reader could reasonably conclude that generating wallets server-side was
+    // an open question, and implement it. Server-side key custody would invert
+    // the product's core promise, put every user's funds behind this service,
+    // and put a seed phrase in a database and a log pipeline. **Never generate,
+    // request, receive, store, log or forward a private key or mnemonic here.**
+    // The outbound half is enforced too: `wallet.service.ts` documents the same
+    // rule, and `config/sentry.ts` scrubs `mnemonic`/`privateKey`/`seed` from any
+    // captured payload.
+    //
+    // Transfers keep keys on the device by construction, not by convention:
+    // `POST /api/transaction/external/prepare` persists an intent and returns
+    // nothing that can sign, and `/:id/submit` takes an already-signed
+    // transaction and verifies it against the stored intent. There is no code
+    // path from this service to a signature.
   },
 
   async getByAccountId(accountId: string) {
