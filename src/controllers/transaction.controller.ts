@@ -1,40 +1,18 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { transactionService } from "../services/transaction/transaction.service.js";
 import { successResponse, handleError } from "../utils/apiResponse.js";
-import { CHAIN_NAMES } from "../chains/index.js";
-import { moneyString } from "../utils/money.js";
-import { idParamSchema, paginationQuerySchema, signedTxSchema } from "../utils/requestSchemas.js";
-import { z } from "zod";
-import { strictObject } from "../utils/requestSchemas.js";
-
-const sendSchema = strictObject({
-  recipientAccountId: z.string().regex(/^\d{10}$/, "Recipient Account ID must be 10 digits").optional(),
-  recipientAddress: z.string().trim().min(1).max(120).optional(),
-  asset: z.string().trim().min(1).max(20),
-  amount: moneyString(),
-  network: z.enum(CHAIN_NAMES),
-  // Authorization PIN, verified server-side against the stored hash before
-  // any transaction is created. Format-only here; the lockout service owns
-  // the actual comparison so failures are counted centrally.
-  pin: z.string().regex(/^\d{6}$/, "PIN must be 6 digits"),
-  // Client-generated UUID, one per transfer attempt: repeats (network
-  // timeout-and-retry, double-tap) replay the original transaction instead of
-  // creating a second one. Required — without it the endpoint cannot
-  // distinguish a retry from a new transfer.
-  idempotencyKey: z.string().uuid("idempotencyKey must be a UUID"),
-}).refine((v) => Boolean(v.recipientAccountId) !== Boolean(v.recipientAddress), {
-  message: "Provide exactly one of recipientAccountId or recipientAddress",
-});
+import {
+  idParamSchema,
+  paginationQuerySchema,
+  signedTxSchema,
+  transactionFeeSchema,
+  transactionSendSchema,
+} from "../utils/requestSchemas.js";
 
 export const transactionController = {
   async estimateFee(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const body = strictObject({
-        recipientAddress: z.string().trim().min(1).max(120),
-        asset: z.string().trim().min(1).max(20),
-        amount: z.string().regex(/^\d+(\.\d+)?$/),
-        network: z.enum(CHAIN_NAMES),
-      }).parse(request.body);
+      const body = transactionFeeSchema.parse(request.body);
       return reply.send(successResponse(await transactionService.estimateFee({ senderId: request.userId!, ...body })));
     } catch (err) {
       return handleError(err, reply);
@@ -43,7 +21,7 @@ export const transactionController = {
 
   async send(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const body = sendSchema.parse(request.body);
+      const body = transactionSendSchema.parse(request.body);
       const result = await transactionService.send({ senderId: request.userId!, ...body });
       return reply.code(201).send(successResponse(result));
     } catch (err) {

@@ -1,6 +1,8 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { z } from "zod";
-import { strictObject } from "../utils/requestSchemas.js";
+import {
+  rampDepositSchema,
+  rampWithdrawSchema,
+} from "../utils/requestSchemas.js";
 import { rampService } from "../services/ramp/ramp.service.js";
 import {
   getRampProvider,
@@ -11,19 +13,6 @@ import { successResponse, handleError } from "../utils/apiResponse.js";
 import { referenceParamSchema } from "../utils/requestSchemas.js";
 import { logger } from "../config/logger.js";
 
-const depositSchema = strictObject({
-  amountNgn: z
-    .string()
-    .regex(/^\d+(\.\d{1,2})?$/, "Enter a valid Naira amount")
-    .refine((v) => Number(v) > 0, "Amount must be greater than zero"),
-});
-
-const withdrawSchema = depositSchema.extend({
-  accountNumber: z.string().regex(/^\d{10}$/, "Enter a valid 10-digit account number"),
-  bankCode: z.string().trim().min(1, "Select a bank"),
-  accountName: z.string().trim().min(2, "Enter the account holder's name").max(120),
-});
-
 function headerValue(request: FastifyRequest, name: string): string | undefined {
   const value = request.headers[name];
   return Array.isArray(value) ? value[0] : value;
@@ -32,7 +21,7 @@ function headerValue(request: FastifyRequest, name: string): string | undefined 
 export const rampController = {
   async deposit(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const body = depositSchema.parse(request.body);
+      const body = rampDepositSchema.parse(request.body);
       return reply.code(201).send(successResponse(await rampService.deposit(request.userId!, body)));
     } catch (err) {
       return handleError(err, reply);
@@ -41,7 +30,7 @@ export const rampController = {
 
   async withdraw(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const body = withdrawSchema.parse(request.body);
+      const body = rampWithdrawSchema.parse(request.body);
       return reply.code(201).send(successResponse(await rampService.withdraw(request.userId!, body)));
     } catch (err) {
       return handleError(err, reply);

@@ -1,19 +1,15 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { strictObject } from "../utils/requestSchemas.js";
+import {
+  addressValidationSchema,
+} from "../utils/requestSchemas.js";
 import { verifyAddressExists } from "../blockchain/triverify.js";
 import { errorResponse, successResponse } from "../utils/apiResponse.js";
-import { CHAIN_NAMES } from "../chains/index.js";
-
-const validationSchema = strictObject({
-  address: z.string().trim().min(1).max(120),
-  chain: z.enum(CHAIN_NAMES),
-});
 
 export const validationController = {
   async address(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const { address, chain } = validationSchema.parse(request.body);
+      const { address, chain } = addressValidationSchema.parse(request.body);
       const result = await verifyAddressExists(address, chain);
       return reply.send(successResponse({
         address,

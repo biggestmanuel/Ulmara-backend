@@ -14,6 +14,7 @@ import {
   buildOpenApiDocument,
   buildOpenApiPaths,
   documentTags,
+  ROUTE_DOCS,
   type LiveRoute,
 } from "./openapi.js";
 import { zodToJsonSchema } from "./zodToJsonSchema.js";
@@ -223,5 +224,78 @@ describe("zodToJsonSchema", () => {
 
   it("converts the pagination schema", () => {
     expect(() => zodToJsonSchema(paginationQuerySchema)).not.toThrow();
+  });
+});
+
+/**
+ * A body on a route that takes no body is a documentation bug the existing drift
+ * checks cannot see: `verifySpecMatchesRoutes` compares ROUTE_DOCS against the
+ * live route table by METHOD and path, so attaching a `body` to the wrong entry
+ * is structurally valid and passes every assertion.
+ *
+ * That is not hypothetical. Attaching bodies to routes caught a real
+ * mis-attach — a schema landed on `GET /api/ramp/status/:reference` and on
+ * `DELETE /api/contact/:id` because those entries were written one-line and a
+ * brace-matching search ran past them into the next entry. The spec generated
+ * cleanly, the drift tests passed, and the document told clients to send a body
+ * to a GET.
+ *
+ * So this asserts the shape directly, from ROUTE_DOCS rather than the built
+ * document, which is where the mistake is made.
+ */
+describe("request bodies are attached to routes that take one", () => {
+  const bodyless = new Set([
+    // Genuinely bodyless. A body here would be a lie about the contract.
+    "POST /api/account/create-account-id",
+    "POST /api/wallet/resolve/:accountId",
+    // The provider's own payload, read RAW for signature verification. It is
+    // deliberately not modelled as a zod schema — see the entry's description.
+    "POST /api/ramp/webhook",
+  ]);
+
+  it("no GET or DELETE route declares a body", () => {
+    const offenders = Object.entries(ROUTE_DOCS)
+      .filter(([route, doc]) => doc.body && /^(GET|DELETE) /.test(route))
+      .map(([route]) => route);
+    expect(offenders).toEqual([]);
+  });
+
+  it("every body-taking route declares a body, except the three that take none", () => {
+    const missing = Object.keys(ROUTE_DOCS).filter(
+      (route) => /^(POST|PATCH|PUT) /.test(route) && !ROUTE_DOCS[route].body && !bodyless.has(route),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("does not declare a body on a route the spec knows to be bodyless", () => {
+    for (const route of bodyless) {
+      expect(ROUTE_DOCS[route]?.body, `${route} must not declare a body`).toBeUndefined();
+    }
+  });
+
+  it("the three bodyless entries really are bodyless in their own right", () => {
+    // A guard on the guard: if someone adds a body to one of these, the
+    // exemption above has to be removed deliberately rather than by accident.
+    for (const route of bodyless) {
+      expect(ROUTE_DOCS[route], `${route} must still be documented`).toBeDefined();
+    }
+  });
+
+  it("documented bodies convert to a JSON Schema without throwing", () => {
+    // The whole point of moving the schemas out of the controllers: ROUTE_DOCS
+    // can reference them. If one could not convert, the spec would break at boot.
+    for (const [route, doc] of Object.entries(ROUTE_DOCS)) {
+      if (!doc.body) continue;
+      const converted = zodToJsonSchema(doc.body.schema);
+      expect(converted, `${route} body did not convert`).toBeTruthy();
+      expect(converted.type, `${route} body is not an object schema`).toBe("object");
+    }
+  });
+
+  it("every documented body states what it carries", () => {
+    for (const [route, doc] of Object.entries(ROUTE_DOCS)) {
+      if (!doc.body) continue;
+      expect(doc.body.description?.length, `${route} body has no description`).toBeGreaterThan(10);
+    }
   });
 });

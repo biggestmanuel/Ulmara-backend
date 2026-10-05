@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CHAIN_NAMES } from "../chains/index.js";
+import { moneyString } from "./money.js";
 
 /**
  * Shared request-shape schemas.
@@ -169,4 +170,210 @@ export const registerWalletsSchema = strictObject({
     )
     .min(1, "At least one address is required")
     .max(20, "At most 20 addresses can be registered at once"),
+});
+
+// ---------------------------------------------------------------------------
+// Request BODIES
+//
+// These were each defined as a module-local `const` inside their controller,
+// which meant the OpenAPI document could not reference them: `openapi.ts` cannot
+// import a controller without dragging Prisma and Redis into the spec tests.
+// Only 2 of 47 routes documented a body as a result, so a client had to
+// hand-audit contracts against a running server instead of reading the spec.
+//
+// Each block below is the schema the controller was already using, moved here
+// unchanged. Behaviour is covered by requestSchemas.test.ts; the point of the
+// move is reachability, not a contract change.
+// ---------------------------------------------------------------------------
+
+/** POST /api/auth/signup. */
+export const signupSchema = strictObject({
+  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
+  phone: z
+    .string()
+    .trim()
+    .regex(/^\+?[0-9]{10,15}$/, "Enter a valid phone number (10-15 digits)")
+    .optional(),
+  password: z.string().min(8, "Password must be at least 8 characters").max(128),
+});
+
+/** POST /api/auth/login. */
+export const loginSchema = strictObject({
+  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
+  password: z.string().min(1, "Password is required"),
+});
+
+/**
+ * POST /api/auth/verify-email and /verify-phone.
+ *
+ * The body carries ONLY the code. These routes are authenticated
+ * (`requireAuth` sets `request.userId` from the session token), and the account
+ * being verified is therefore the caller's own. The schema used to accept a
+ * body-supplied `userId` and the service used it directly, so an authenticated
+ * caller could complete verification, or burn another user's resend budget, for
+ * an arbitrary account id. Identity comes only from the verified session now,
+ * which is also what makes the per-user rate limit meaningful.
+ */
+export const verifySchema = strictObject({
+  code: z.string().regex(/^\d{6}$/, "Verification code must be 6 digits"),
+});
+
+/** POST /api/auth/resend-code. */
+export const resendSchema = strictObject({
+  channel: z.enum(["email", "phone"]),
+});
+
+/** POST /api/auth/set-pin and /verify-pin. */
+export const pinSchema = strictObject({
+  pin: z.string().regex(/^\d{6}$/, "PIN must be 6 digits"),
+});
+
+/** POST /api/auth/change-pin. Proves knowledge of the PIN being replaced. */
+export const changePinSchema = strictObject({
+  currentPin: z.string().regex(/^\d{6}$/, "Current PIN must be 6 digits"),
+  newPin: z.string().regex(/^\d{6}$/, "New PIN must be 6 digits"),
+});
+
+/** POST /api/auth/forgot-password. */
+export const forgotPasswordSchema = strictObject({
+  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
+});
+
+/**
+ * POST /api/contact.
+ *
+ * `Contact.id` is a Prisma uuid, so a malformed id is a clean 400 rather than a
+ * driver-level error, and the delete query's `where` stays provably well-formed.
+ */
+export const contactCreateSchema = strictObject({
+  name: z.string().trim().min(1).max(100),
+  accountId: z.string().regex(/^\d{10}$/).optional(),
+  address: z.string().trim().min(1).max(120).optional(),
+  chain: z.enum(CHAIN_NAMES).optional(),
+});
+
+/** Path params for /api/contact/:id. */
+export const contactParamsSchema = strictObject({
+  id: z.string().uuid(),
+});
+
+/**
+ * PATCH /api/contact/:id.
+ *
+ * Both fields optional, but at least one must be present — an empty patch is a
+ * client bug, and silently returning the unchanged contact would hide it.
+ */
+export const contactUpdateSchema = strictObject({
+  name: z.string().trim().min(1).max(100).optional(),
+  accountId: z.string().regex(/^\d{10}$/).optional(),
+}).refine((value) => value.name !== undefined || value.accountId !== undefined, {
+  message: "Provide at least one of name or accountId",
+});
+
+/** POST /api/transaction/external/prepare. */
+export const externalPrepareSchema = strictObject({
+  chain: z.enum(CHAIN_NAMES),
+  asset: z.string().trim().min(1).max(20),
+  amount: moneyString(),
+  to: z.string().trim().min(1).max(120),
+  // Authorization PIN, verified server-side with the same lockout rules as
+  // internal transfers (5 wrong attempts -> 15-minute lockout).
+  pin: z.string().regex(/^\d{6}$/, "PIN must be 6 digits"),
+});
+
+/**
+ * POST /api/transaction/external/:id/submit.
+ *
+ * Client-generated UUID, one per submit attempt: a retry after a lost response
+ * replays the original transaction instead of creating a second ledger row and
+ * broadcasting the same signature twice.
+ */
+export const externalSubmitSchema = strictObject({
+  signedTransaction: z.string().trim().min(16).max(1_000_000),
+  idempotencyKey: z.string().uuid("idempotencyKey must be a UUID"),
+});
+
+/** POST /api/payment/request. */
+export const paymentRequestSchema = strictObject({
+  asset: z.string().trim().min(1).max(20).optional(),
+  symbol: z.string().trim().min(1).max(20).optional(),
+  amount: moneyString().optional(),
+  expiresAt: z.string().datetime().optional(),
+  // `note` is optional, trimmed, capped at 140 characters, and an empty
+  // (or whitespace-only) string is treated as absent rather than stored as "".
+  // The transform runs after the length check so the cap applies to what is
+  // actually stored, not to the raw input padded with spaces.
+  note: z
+    .string()
+    .transform((value) => value.trim())
+    .pipe(z.string().max(140, "note must be 140 characters or fewer"))
+    .transform((value) => (value.length === 0 ? undefined : value))
+    .optional(),
+  // Both fields are `.min(1).optional()`, so by the time this refine runs each is
+  // either absent or a non-empty string: an explicit presence check is exactly
+  // equivalent to the truthiness check and states the intent more precisely.
+}).refine((value) => value.asset !== undefined || value.symbol !== undefined, "asset is required");
+
+/**
+ * POST /api/payment/request/:id/fulfill.
+ *
+ * Was a bare `z.object`, so it accepted unknown keys while every other body in
+ * the API rejected them. Now `strictObject` like the rest.
+ */
+export const paymentFulfillSchema = strictObject({
+  transactionId: z.string().uuid("transactionId must be a valid UUID"),
+});
+
+/** POST /api/ramp/deposit. */
+export const rampDepositSchema = strictObject({
+  amountNgn: z
+    .string()
+    .regex(/^\d+(\.\d{1,2})?$/, "Enter a valid Naira amount")
+    .refine((v) => Number(v) > 0, "Amount must be greater than zero"),
+});
+
+/** POST /api/ramp/withdraw. */
+export const rampWithdrawSchema = rampDepositSchema.extend({
+  accountNumber: z.string().regex(/^\d{10}$/, "Enter a valid 10-digit account number"),
+  bankCode: z.string().trim().min(1, "Select a bank"),
+  accountName: z.string().trim().min(2, "Enter the account holder's name").max(120),
+});
+
+/**
+ * POST /api/transaction/send.
+ *
+ * Note the field is `network`, not `chain`, which differs from every other
+ * endpoint in the API and is an easy mistake.
+ */
+export const transactionSendSchema = strictObject({
+  recipientAccountId: z.string().regex(/^\d{10}$/, "Recipient Account ID must be 10 digits").optional(),
+  recipientAddress: z.string().trim().min(1).max(120).optional(),
+  asset: z.string().trim().min(1).max(20),
+  amount: moneyString(),
+  network: z.enum(CHAIN_NAMES),
+  // Authorization PIN, verified server-side against the stored hash before any
+  // transaction is created. Format-only here; the lockout service owns the
+  // actual comparison so failures are counted centrally.
+  pin: z.string().regex(/^\d{6}$/, "PIN must be 6 digits"),
+  // Client-generated UUID, one per transfer attempt: repeats (network
+  // timeout-and-retry, double-tap) replay the original transaction instead of
+  // creating a second one. Required — without it the endpoint cannot distinguish
+  // a retry from a new transfer.
+  idempotencyKey: z.string().uuid("idempotencyKey must be a UUID"),
+}).refine((v) => Boolean(v.recipientAccountId) !== Boolean(v.recipientAddress), {
+  message: "Provide exactly one of recipientAccountId or recipientAddress",
+});
+
+/** POST /api/transaction/fee. Was inline inside the handler, so undocumentable. */
+export const transactionFeeSchema = strictObject({
+  recipientAddress: z.string().trim().min(1).max(120),
+  asset: z.string().trim().min(1).max(20),
+  amount: moneyString(),
+  network: z.enum(CHAIN_NAMES),
+});
+
+/** POST /api/validation/address. */
+export const addressValidationSchema = strictObject({
+  address: z.string().trim().min(1).max(120),
+  chain: z.enum(CHAIN_NAMES),
 });

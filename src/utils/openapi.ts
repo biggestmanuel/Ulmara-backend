@@ -54,13 +54,32 @@ import type { z } from "zod";
 import { zodToJsonSchema } from "./zodToJsonSchema.js";
 import {
   accountIdParamSchema,
+  addressValidationSchema,
   chainParamSchema,
+  changePinSchema,
+  contactCreateSchema,
+  contactUpdateSchema,
+  externalPrepareSchema,
+  externalSubmitSchema,
+  forgotPasswordSchema,
   idParamSchema,
+  loginSchema,
   paginationQuerySchema,
+  paymentFulfillSchema,
+  paymentRequestSchema,
+  pinSchema,
+  rampDepositSchema,
+  rampWithdrawSchema,
   referenceParamSchema,
   registerWalletsSchema,
+  resendSchema,
+  settingsSchema,
   signedTxSchema,
+  signupSchema,
   tokenBalancesQuerySchema,
+  transactionFeeSchema,
+  transactionSendSchema,
+  verifySchema,
 } from "./requestSchemas.js";
 
 /** The `Authorization: Bearer <jwt>` scheme used by every authenticated route. */
@@ -127,11 +146,13 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     summary: "Create an account",
     tags: ["auth"],
     description: "Sends a verification code to the supplied email address.",
+    body: { schema: signupSchema, description: "email, an optional phone, and a password of 8-128 characters." },
   },
   "POST /api/auth/login": {
     summary: "Exchange credentials for a session token",
     tags: ["auth"],
     description: "Rate limited per IP. The returned token is a JWT bound to a server-side session row.",
+    body: { schema: loginSchema, description: "email and password." },
   },
   "POST /api/auth/verify-email": {
     summary: "Submit the email verification code",
@@ -139,37 +160,44 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     auth: true,
     description:
       "The account is taken from the session, never from the body — a caller cannot complete verification for another account.",
+    body: { schema: verifySchema, description: "The 6-digit code only — no userId; identity comes from the session token." },
   },
   "POST /api/auth/verify-phone": {
     summary: "Submit the phone verification code",
     tags: ["auth"],
     auth: true,
+    body: { schema: verifySchema, description: "The 6-digit code only — no userId; identity comes from the session token." },
   },
   "POST /api/auth/resend-code": {
     summary: "Resend a verification code",
     tags: ["auth"],
     auth: true,
     description: "The account is taken from the session.",
+    body: { schema: resendSchema, description: "Which channel to resend to." },
   },
   "POST /api/auth/forgot-password": {
     summary: "Request a password reset email",
     tags: ["auth"],
+    body: { schema: forgotPasswordSchema, description: "email only." },
   },
   "POST /api/auth/set-pin": {
     summary: "Set the transaction authorization PIN",
     tags: ["auth"],
     auth: true,
+    body: { schema: pinSchema, description: "The PIN to set. First-time only: returns 409 once a PIN exists — use /change-pin to replace one." },
   },
   "POST /api/auth/verify-pin": {
     summary: "Verify the PIN for a sensitive operation",
     tags: ["auth"],
     auth: true,
     description: "Failures count towards a lockout shared with login and transfer.",
+    body: { schema: pinSchema, description: "The PIN to check against the stored hash." },
   },
   "POST /api/auth/change-pin": {
     summary: "Change the PIN",
     tags: ["auth"],
     auth: true,
+    body: { schema: changePinSchema, description: "The current PIN and the new one. Proves knowledge of the PIN being replaced." },
   },
   "GET /api/auth/sessions": {
     summary: "List active sessions",
@@ -220,6 +248,7 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
       "leave that setting untouched. name, photoUrl and defaultNetwork are nullable: send an " +
       "explicit null to clear one back to NULL, matching what GET /api/account/me returns for an " +
       "unset value. defaultCurrency and defaultLanguage are not nullable — they always hold a value.",
+    body: { schema: settingsSchema, description: "Omit a key to leave it untouched; send an explicit null to clear name, photoUrl or defaultNetwork." },
   },
 
   // ---- wallet ------------------------------------------------------------
@@ -278,11 +307,13 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     summary: "Send to another Ulmara account",
     tags: ["transaction"],
     auth: true,
+    body: { schema: transactionSendSchema, description: "Exactly one of recipientAccountId or recipientAddress. Note the field is `network`, not `chain`. idempotencyKey is required." },
   },
   "POST /api/transaction/fee": {
     summary: "Estimate the network fee",
     tags: ["transaction"],
     auth: true,
+    body: { schema: transactionFeeSchema, description: "recipientAddress, asset, amount and network." },
   },
   "GET /api/transaction/:id": {
     summary: "Transaction detail",
@@ -309,6 +340,7 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     auth: true,
     description:
       "Returns the exact transaction the client must sign, on-device. The intent is server-persisted, single-use and expiring.",
+    body: { schema: externalPrepareSchema, description: "chain, asset, amount, destination address and the authorising PIN." },
   },
   "POST /api/transaction/external/:id/submit": {
     summary: "Submit a signed external-wallet transfer",
@@ -317,11 +349,17 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     description:
       "Re-verifies the signed transaction against the stored intent — recipient, amount, target contract, value and chain — before broadcasting.",
     params: [{ name: "id", schema: idParamSchema.shape.id, description: "Transfer intent id (UUID)." }],
+    body: { schema: externalSubmitSchema, description: "The serialized signed transaction plus a per-attempt idempotencyKey." },
   },
 
   // ---- contact -----------------------------------------------------------
   "GET /api/contact": { summary: "List saved contacts", tags: ["contact"], auth: true },
-  "POST /api/contact": { summary: "Save a contact", tags: ["contact"], auth: true },
+  "POST /api/contact": {
+    summary: "Save a contact",
+    tags: ["contact"],
+    auth: true,
+    body: { schema: contactCreateSchema, description: "name, plus an optional Account ID, address and chain." },
+  },
   "DELETE /api/contact/:id": {
     summary: "Delete a contact",
     tags: ["contact"],
@@ -339,10 +377,16 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
       "not the caller's, 404 \"Account ID not found\" for an unknown Account ID, and 409 for a name " +
       "this owner already uses on another contact.",
     params: [{ name: "id", schema: idParamSchema.shape.id, description: "Contact id (UUID)." }],
+    body: { schema: contactUpdateSchema, description: "At least one of name or accountId. The contact id comes from the path and is preserved." },
   },
 
   // ---- payment -----------------------------------------------------------
-  "POST /api/payment/request": { summary: "Create a payment request", tags: ["payment"], auth: true },
+  "POST /api/payment/request": {
+    summary: "Create a payment request",
+    tags: ["payment"],
+    auth: true,
+    body: { schema: paymentRequestSchema, description: "asset or symbol, optional amount and expiry, and an optional note of 140 characters or fewer." },
+  },
   "GET /api/payment/request/:id": {
     summary: "Fetch a payment request",
     tags: ["payment"],
@@ -354,11 +398,22 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     tags: ["payment"],
     auth: true,
     params: [{ name: "id", schema: idParamSchema.shape.id, description: "Payment request id (UUID)." }],
+    body: { schema: paymentFulfillSchema, description: "The transaction that settles the request." },
   },
 
   // ---- ramp --------------------------------------------------------------
-  "POST /api/ramp/deposit": { summary: "Start an NGN to crypto deposit", tags: ["ramp"], auth: true },
-  "POST /api/ramp/withdraw": { summary: "Start a crypto to NGN withdrawal", tags: ["ramp"], auth: true },
+  "POST /api/ramp/deposit": {
+    summary: "Start an NGN to crypto deposit",
+    tags: ["ramp"],
+    auth: true,
+    body: { schema: rampDepositSchema, description: "amountNgn, in Naira. Not `amount`." },
+  },
+  "POST /api/ramp/withdraw": {
+    summary: "Start a crypto to NGN withdrawal",
+    tags: ["ramp"],
+    auth: true,
+    body: { schema: rampWithdrawSchema, description: "amountNgn plus the destination account number, bank code and holder name." },
+  },
   "GET /api/ramp/status/:reference": {
     summary: "Ramp transaction status",
     tags: ["ramp"],
@@ -377,6 +432,7 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     summary: "Check whether an address is valid and in use on a chain",
     tags: ["validation"],
     auth: true,
+    body: { schema: addressValidationSchema, description: "The address and the UPPERCASE chain id to verify it on." },
   },
 };
 
