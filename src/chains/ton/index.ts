@@ -1,9 +1,13 @@
 import { Address, TonClient } from "@ton/ton";
 import { env } from "../../config/env.js";
+import { fromBaseUnits, toBaseUnits } from "../../utils/money.js";
 import { ProviderUnavailableError, type ChainAdapter } from "../chain.types.js";
 
 const client = env.TON_RPC_URL ? new TonClient({ endpoint: env.TON_RPC_URL }) : null;
 const requireClient = () => client ?? (() => { throw new ProviderUnavailableError("TON", "RPC"); })();
+
+/** TON's base unit is the nanotoken: 1 TON = 1e9 nanotokens. */
+const NANOTOKEN_DECIMALS = 9;
 
 export const tonAdapter: ChainAdapter = {
   chain: "TON",
@@ -14,14 +18,21 @@ export const tonAdapter: ChainAdapter = {
   },
 
   async getBalance(address, asset) {
-    if (asset) throw new Error("Jetton balance reads are not implemented yet");
+    // Only the native path is implemented; the chain's own symbol is native.
+    if (asset && asset !== "TON") throw new Error("Jetton balance reads are not implemented yet");
     const balance = await requireClient().getBalance(Address.parse(address));
-    return Number(balance) / 1e9 + "";
+    // Exact. `Number(balance) / 1e9` dropped the entire fractional part for
+    // any balance whose nanotoken count exceeded the float mantissa — a user
+    // holding 21000000.000000001 TON was shown a balance of 21000000.
+    return fromBaseUnits(BigInt(balance.toString()), NANOTOKEN_DECIMALS);
   },
 
   async buildTransaction(input) {
     if (input.asset !== "TON") throw new Error("TON adapter supports native TON only");
-    return { to: Address.parse(input.toAddress).toRawString(), amountNano: BigInt(Math.round(Number(input.amount) * 1e9)).toString() };
+    return {
+      to: Address.parse(input.toAddress).toRawString(),
+      amountNano: toBaseUnits(input.amount, NANOTOKEN_DECIMALS).toString(),
+    };
   },
 
   async sendTransaction(signedTx) {

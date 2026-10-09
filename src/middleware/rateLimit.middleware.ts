@@ -22,21 +22,33 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 // neither which user/account exists nor how many attempts remain.
 // ---------------------------------------------------------------------------
 
-/** Key per client IP (used where no auth context exists, e.g. login). */
-async function ipKey(request: FastifyRequest): Promise<string> {
+/**
+ * Key per client IP (used where no auth context exists, e.g. login).
+ * Synchronous on purpose: @fastify/rate-limit's `keyGenerator` accepts
+ * `string | number | Promise<...>`, and there is nothing to await here.
+ */
+function ipKey(request: FastifyRequest): string {
   return request.ip;
 }
 
 /** Key per authenticated user, falling back to IP before auth runs. */
-async function userOrIpKey(request: FastifyRequest): Promise<string> {
+function userOrIpKey(request: FastifyRequest): string {
   return request.userId ?? request.ip;
 }
+
+/**
+ * The 429 body text. Exported because two callers need it: `rejectWith429` below
+ * (route limiters, which signal by throwing) and the not-found handler in
+ * `server/app.ts`, which answers a 429 directly rather than throwing. One string,
+ * so the two cannot drift and produce two different "slow down" messages.
+ */
+export const RATE_LIMITED_MESSAGE = "Too many requests. Please slow down and try again later.";
 
 /** 429 for these routes. Passes no details beyond "try again later". */
 function rejectWith429(): never {
   // Same convention as the services: an Error carrying a statusCode, handled
   // by the app-wide error middleware into the standard error envelope.
-  throw Object.assign(new Error("Too many requests. Please slow down and try again later."), {
+  throw Object.assign(new Error(RATE_LIMITED_MESSAGE), {
     statusCode: 429,
   });
 }

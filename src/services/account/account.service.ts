@@ -1,5 +1,6 @@
 import { prisma } from "../../config/database.js";
 import { generateAccountId } from "../../utils/generateAccountId.js";
+import { HttpError } from "../../utils/apiResponse.js";
 import type { Chain } from "@prisma/client";
 
 export const accountService = {
@@ -9,7 +10,9 @@ export const accountService = {
       include: { accountId: true },
     });
     if (!user) throw Object.assign(new Error("User not found"), { statusCode: 404 });
-    const { passwordHash, pinHash, ...safe } = user;
+    // `_`-prefixed so the deliberate omission of the credential columns is
+    // explicit at the destructuring site rather than looking like a dead read.
+    const { passwordHash: _passwordHash, pinHash: _pinHash, ...safe } = user;
     return safe;
   },
 
@@ -27,13 +30,35 @@ export const accountService = {
         return prisma.accountId.create({ data: { accountId: candidate, userId } });
       }
     }
-    throw Object.assign(new Error("Could not generate a unique Account ID, try again"), {
-      statusCode: 500,
-    });
+    // User-safe copy, so it is an HttpError: handleError surfaces a 5xx message
+    // only for that class, and this one tells the caller to retry rather than
+    // leaving them with "Something went wrong".
+    throw new HttpError(500, "Could not generate a unique Account ID, try again");
 
-    // NOTE: this does NOT create Wallet rows for the 7 chains. Doing that safely
-    // requires a real key-generation/custody design (HD wallet derivation + secure
-    // key storage) which hasn't been decided yet — see chat notes.
+    // This deliberately creates NO Wallet rows. Ulmara is non-custodial and that
+    // decision is made and implemented, not pending: the client generates every
+    // key on the device (`lib/keyGeneration.ts` in avora-frontend — bip39
+    // mnemonics, one derivation path per chain), signs on the device
+    // (`lib/signing/`), and stores the phrases in the device keystore. It then
+    // registers the PUBLIC addresses here via `POST /api/wallet/register`, and
+    // those are the only address strings this service ever sees.
+    //
+    // This comment previously said the custody design "hasn't been decided yet".
+    // It had been, and leaving the stale wording in place was a live hazard: a
+    // reader could reasonably conclude that generating wallets server-side was
+    // an open question, and implement it. Server-side key custody would invert
+    // the product's core promise, put every user's funds behind this service,
+    // and put a seed phrase in a database and a log pipeline. **Never generate,
+    // request, receive, store, log or forward a private key or mnemonic here.**
+    // The outbound half is enforced too: `wallet.service.ts` documents the same
+    // rule, and `config/sentry.ts` scrubs `mnemonic`/`privateKey`/`seed` from any
+    // captured payload.
+    //
+    // Transfers keep keys on the device by construction, not by convention:
+    // `POST /api/transaction/external/prepare` persists an intent and returns
+    // nothing that can sign, and `/:id/submit` takes an already-signed
+    // transaction and verifies it against the stored intent. There is no code
+    // path from this service to a signature.
   },
 
   async getByAccountId(accountId: string) {
@@ -71,12 +96,16 @@ export const accountService = {
 
   async updateSettings(
     userId: string,
+    // `null` is a real instruction, not "absent": the schema uses
+    // `.nullable().optional()` so a client can clear a nullable column back to
+    // NULL. Omitting a key leaves it untouched, because Prisma only writes the
+    // keys actually present in `data`.
     input: Partial<{
-      name: string;
-      photoUrl: string;
+      name: string | null;
+      photoUrl: string | null;
       defaultCurrency: string;
       defaultLanguage: string;
-      defaultNetwork: Chain;
+      defaultNetwork: Chain | null;
     }>
   ) {
     return prisma.user.update({

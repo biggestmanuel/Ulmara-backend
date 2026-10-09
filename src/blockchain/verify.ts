@@ -1,5 +1,6 @@
 import { verifyOnChain, Chain } from '@tribridge/triverify';
-import { verifyOnChainFallback, FallbackChain } from './evmFallback.js';
+import type { FallbackChain } from './evmFallback.js';
+import { verifyOnChainFallback } from './evmFallback.js';
 import { env } from '../config/env.js';
 
 /**

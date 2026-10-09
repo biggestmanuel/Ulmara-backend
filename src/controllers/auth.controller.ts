@@ -1,48 +1,24 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { z } from "zod";
+import {
+  changePinSchema,
+  forgotPasswordSchema,
+  loginSchema,
+  pinSchema,
+  resendSchema,
+  signupSchema,
+  verifySchema,
+} from "../utils/requestSchemas.js";
 import { authService } from "../services/auth/auth.service.js";
 import { successResponse, handleError } from "../utils/apiResponse.js";
+import { idParamSchema } from "../utils/requestSchemas.js";
 
 // Signup/login are the most-abused endpoints; keep the shared global limit
 // from app.ts but nothing stricter here for now.
-const signupSchema = z.object({
-  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
-  phone: z
-    .string()
-    .trim()
-    .regex(/^\+?[0-9]{10,15}$/, "Enter a valid phone number (10-15 digits)")
-    .optional(),
-  password: z.string().min(8, "Password must be at least 8 characters").max(128),
-});
-
-const loginSchema = z.object({
-  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
-  password: z.string().min(1, "Password is required"),
-});
-
-const verifySchema = z.object({
-  userId: z.string().uuid("Invalid user reference"),
-  code: z.string().regex(/^\d{6}$/, "Verification code must be 6 digits"),
-});
-
-const resendSchema = z.object({
-  userId: z.string().uuid("Invalid user reference"),
-  channel: z.enum(["email", "phone"]),
-});
-
-const pinSchema = z.object({
-  pin: z.string().regex(/^\d{6}$/, "PIN must be 6 digits"),
-});
-
-const changePinSchema = z.object({
-  currentPin: z.string().regex(/^\d{6}$/, "Current PIN must be 6 digits"),
-  newPin: z.string().regex(/^\d{6}$/, "New PIN must be 6 digits"),
-});
-
-const forgotPasswordSchema = z.object({
-  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
-});
-
+//
+// The body schemas live in src/utils/requestSchemas.ts: they are strictObject
+// (a typo such as `network` for `chain`, or a field from an older client, must
+// be a 400 rather than a silently dropped value) and they are there rather
+// than here so ROUTE_DOCS can reference them for the OpenAPI document.
 export const authController = {
   async signup(request: FastifyRequest, reply: FastifyReply) {
     try {
@@ -69,7 +45,7 @@ export const authController = {
   async verifyEmail(request: FastifyRequest, reply: FastifyReply) {
     try {
       const body = verifySchema.parse(request.body);
-      const result = await authService.verifyEmail(body);
+      const result = await authService.verifyEmail({ ...body, userId: request.userId! });
       return reply.code(200).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);
@@ -79,7 +55,7 @@ export const authController = {
   async verifyPhone(request: FastifyRequest, reply: FastifyReply) {
     try {
       const body = verifySchema.parse(request.body);
-      const result = await authService.verifyPhone(body);
+      const result = await authService.verifyPhone({ ...body, userId: request.userId! });
       return reply.code(200).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);
@@ -89,7 +65,7 @@ export const authController = {
   async resendCode(request: FastifyRequest, reply: FastifyReply) {
     try {
       const body = resendSchema.parse(request.body);
-      const result = await authService.resendVerificationCode(body.userId, body.channel);
+      const result = await authService.resendVerificationCode(request.userId!, body.channel);
       return reply.code(200).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);
@@ -151,8 +127,19 @@ export const authController = {
     try {
       const authHeader = request.headers.authorization!;
       const currentToken = authHeader.slice(7);
-      const { id } = request.params as { id: string };
+      const { id } = idParamSchema.parse(request.params);
       const result = await authService.revokeSession(request.userId!, id, currentToken);
+      return reply.code(200).send(successResponse(result));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
+  async logout(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const authHeader = request.headers.authorization!;
+      const currentToken = authHeader.slice(7);
+      const result = await authService.logout(currentToken);
       return reply.code(200).send(successResponse(result));
     } catch (err) {
       return handleError(err, reply);

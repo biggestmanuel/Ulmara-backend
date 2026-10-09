@@ -1,0 +1,84 @@
+# Redis for the Ulmara backend.
+#
+#   docker compose up -d          # start (or recreate) avora-redis
+#   docker compose ps
+#   docker compose down           # remove the container, KEEP the named volume
+#   docker compose down -v        # DESTRUCTIVE: also deletes /data (queue + OTP keys)
+#
+# This replaces the ad-hoc `docker run redis:alpine` container that predated it.
+# The container keeps the name `avora-redis` and publishes 6379 on all
+# interfaces, so REDIS_URL and the test suite are unaffected.
+#
+# Why each option is here — see OPERATIONS.md §4 for the measurements:
+#
+#   appendonly yes            RDB snapshots alone can lose up to a minute of
+#                             queued work, and these jobs move money.
+#   appendfsync everysec      At most ~1s of writes at risk on a hard crash,
+#                             instead of up to 60s. `always` would fsync per
+#                             write and is not worth the latency here.
+#   save ...                  RDB is kept alongside AOF: it makes a cold start
+#                             fast and gives a single-file backup artefact.
+#   maxmemory-policy noeviction
+#                             REQUIRED for BullMQ. Any eviction-capable policy
+#                             (allkeys-lru, volatile-lru, ...) can silently
+#                             discard job keys and lose a transfer.
+#   maxmemory 256mb           With noeviction, hitting the limit makes writes
+#                             FAIL LOUDLY instead of silently dropping work — and
+#                             it stops an unbounded dev Redis from being OOM-
+#                             killed by the Docker VM, which is a far harder
+#                             failure to diagnose (the container just vanishes
+#                             with exit 255 and no log line). Raise this and
+#                             alert on memory instead of enabling eviction.
+#   named volume              Without it, /data lives in the container's
+#                             writable layer and a recreate silently loses the
+#                             queue.
+#   restart: unless-stopped   Redis coming back by itself after a crash or a
+#                             Docker/WSL restart.
+
+name: avora
+
+services:
+  redis:
+    image: redis:8-alpine
+    container_name: avora-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - "900 1"
+      - --save
+      - "300 10"
+      - --save
+      - "60 10000"
+      - --maxmemory-policy
+      - noeviction
+      - --maxmemory
+      - 256mb
+    volumes:
+      # Named (not bind-mounted) so it works identically on Windows/WSL, macOS
+      # and Linux hosts, where bind-mount paths do not translate.
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    # AOF rewrites can stall the server for tens of milliseconds; give the
+    # stop a moment so a shutdown is a clean save rather than a lost tail.
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    # Local development only: this instance is plaintext and unauthenticated.
+    # Production must use a managed Redis with TLS + an ACL user (OPERATIONS.md
+    # §4, recommendation 5).
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  redis-data:
+    name: avora-redis-data

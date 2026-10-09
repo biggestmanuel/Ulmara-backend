@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { walletService } from "../services/wallet/wallet.service.js";
 import { successResponse, handleError } from "../utils/apiResponse.js";
-import type { ChainName } from "../chains/index.js";
+import { accountIdParamSchema, chainParamSchema, registerWalletsSchema, tokenBalancesQuerySchema } from "../utils/requestSchemas.js";
 
 export const walletController = {
   async getBalances(request: FastifyRequest, reply: FastifyReply) {
@@ -24,7 +24,7 @@ export const walletController = {
 
   async resolveAccountId(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const { accountId } = request.params as { accountId: string };
+      const { accountId } = accountIdParamSchema.parse(request.params);
       const result = await walletService.resolveAccountId(accountId);
       return reply.send(successResponse(result));
     } catch (err) {
@@ -34,9 +34,28 @@ export const walletController = {
 
   async registerWallets(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const body = request.body as { addresses: { chain: ChainName; address: string }[] };
-      const result = await walletService.registerWallets(request.userId!, body.addresses);
+      const { addresses } = registerWalletsSchema.parse(request.body);
+      const result = await walletService.registerWallets(request.userId!, addresses);
       return reply.code(200).send(successResponse(result));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
+  async listTokens(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const { chain } = chainParamSchema.parse(request.params);
+      return reply.send(successResponse(await walletService.listSupportedTokens(chain)));
+    } catch (err) {
+      return handleError(err, reply);
+    }
+  },
+
+  /** B5/C5: token balances for one chain + one address. */
+  async tokenBalances(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const { chain, address } = tokenBalancesQuerySchema.parse(request.query);
+      return reply.send(successResponse(await walletService.getTokenBalancesForChain(chain, address)));
     } catch (err) {
       return handleError(err, reply);
     }

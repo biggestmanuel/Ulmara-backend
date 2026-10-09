@@ -4,7 +4,7 @@ import { externalTransferController } from "../controllers/externalTransfer.cont
 import { requireAuth } from "../middleware/auth.middleware.js";
 import { createTightenedRateLimit } from "../middleware/rateLimit.middleware.js";
 
-export async function transactionRoutes(app: FastifyInstance) {
+export function transactionRoutes(app: FastifyInstance) {
   // Stricter per-route throttles for money-movement endpoints, layered on
   // top of the global 100 req/min per-IP limiter from app.ts (separate
   // counter store; neither consumes the other's budget). Each route gets its

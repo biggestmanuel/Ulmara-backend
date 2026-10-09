@@ -38,7 +38,20 @@ export function handleError(err: unknown, reply: FastifyReply) {
   const message = err instanceof Error ? err.message : "Something went wrong";
 
   if (statusCode >= 500) {
-    // Log unexpected failures server-side; never echo internals to the client.
+    // An HttpError is the codebase's deliberate, user-facing channel: every one
+    // is written as copy meant for a person ("Naira deposits are temporarily
+    // unavailable. Please try again shortly.", "SMS verification is not
+    // available yet. Verify your email instead."). Replacing those with a generic
+    // string discarded nine hand-written messages across auth, ramp and external
+    // transfers — the frontend saw "Something went wrong" for a 503 that had an
+    // explanation sitting right there.
+    //
+    // Anything that is NOT an HttpError is an unexpected crash whose message may
+    // contain internals (a SQL fragment, a file path, a provider URL), so that
+    // case still gets the generic text.
+    if (err instanceof HttpError) {
+      return reply.code(statusCode).send(errorResponse(err.message));
+    }
     return reply.code(statusCode).send(errorResponse("Something went wrong. Please try again."));
   }
   return reply.code(statusCode).send(errorResponse(message));

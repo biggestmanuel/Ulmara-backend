@@ -1,9 +1,15 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, {
+  type FastifyBaseLogger,
+  type FastifyInstance,
+  type RawReplyDefaultExpression,
+  type RawRequestDefaultExpression,
+  type RawServerDefault,
+} from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
-import { env } from "../config/env.js";
+import { env, assertEmailProviderConfigured, assertRampProviderConfigured } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { authRoutes } from "../routes/auth.routes.js";
 import { accountRoutes } from "../routes/account.routes.js";
@@ -13,15 +19,118 @@ import { paymentRoutes } from "../routes/payment.routes.js";
 import { rampRoutes } from "../routes/ramp.routes.js";
 import { contactRoutes } from "../routes/contact.routes.js";
 import { errorHandler } from "../middleware/error.middleware.js";
+import { createIpRateLimit, RATE_LIMITED_MESSAGE } from "../middleware/rateLimit.middleware.js";
+import { errorResponse } from "../utils/apiResponse.js";
 import { registerWebsocketHandlers } from "../websocket/socket.handler.js";
+import { startUserEventBridge } from "../websocket/emit.js";
 import { validationRoutes } from "../routes/validation.routes.js";
+import { registerHealthRoutes, startQueueDepthLogger } from "../routes/health.routes.js";
+import { registerApiDocs } from "../utils/openapiRoutes.js";
+import { attachRouteCapture, capturedRoutes, shouldServeApiDocs, startRouteCapture } from "../utils/routeInventory.js";
+
+declare module "fastify" {
+  interface FastifyRequest {
+    /** Verbatim request bytes; required for provider webhook signature checks. */
+    rawBody?: Buffer;
+  }
+}
 
 export async function buildApp(): Promise<FastifyInstance> {
-  const app = Fastify<any, any, any, any>({
+  // Fail fast and loudly: a production deployment with the email provider
+  // selected but uncredentialed would otherwise fail on a user's first tap.
+  assertEmailProviderConfigured();
+  assertRampProviderConfigured();
+
+  // The generics are stated explicitly rather than left to inference: passing
+  // pino's `Logger` as `loggerInstance` makes TypeScript infer the instance's
+  // logger parameter as pino's own `Logger`, which is then NOT assignable to
+  // the plain `FastifyInstance` that every route module declares as its
+  // parameter type. Pinning the 4th parameter to `FastifyBaseLogger` makes the
+  // two identical. This replaces four `any` generics that previously hid the
+  // whole route-registration surface from type checking.
+  const app = Fastify<
+    RawServerDefault,
+    RawRequestDefaultExpression,
+    RawReplyDefaultExpression,
+    FastifyBaseLogger
+  >({
     loggerInstance: logger,
-    disableRequestLogging: false,
+    // Determines what `request.ip` returns, which is the key every rate limiter
+    // uses. Left false, a proxied deployment gives all users one shared budget.
+    trustProxy: resolveTrustProxy(env.TRUSTED_PROXIES, env.TRUSTED_PROXY_COUNT),
+    // Fastify parses JSON before our handlers run, which destroys the exact
+    // bytes a webhook signature is computed over. Parsing is re-enabled per
+    // route in the onRequest hook below, except for the webhook.
+    bodyLimit: 1_048_576,
   });
   app.setErrorHandler(errorHandler);
+
+  // A 404 is the one error that never reaches `setErrorHandler`: Fastify's
+  // router rejects an unmatched path itself, so the default handler answers
+  // `{ message: "Route GET:/x not found", error: "Not Found", statusCode: 404 }`
+  // — no `success` key, so it is NOT the envelope every other error uses.
+  //
+  // That is not cosmetic. The client only surfaces a server message when the
+  // body is exactly `{ success: false, message }` (`lib/api/client.ts`), so a
+  // typo'd path or a wrong method came back to the user as the generic
+  // "Not found. Please check the details and try again." with the actual cause
+  // discarded — while a real 404 from a service (an unknown transaction id)
+  // arrived in the envelope and read properly. Same status, same meaning, two
+  // different shapes, decided purely by which layer produced it.
+  //
+  // The method is included because "wrong verb on a real path" is the case worth
+  // naming: a client that should have POSTed learns the route exists and what it
+  // takes, which is not sensitive (the route table is published at /docs/json).
+  //
+  // (Registered below, after @fastify/rate-limit is attached — the miss limiter
+  // needs `createRateLimit`, which the plugin decorates onto the instance.)
+
+  // B2: an empty body with `Content-Type: application/json` is accepted as no
+  // body. axios sets that header on EVERY request, including the ones that send
+  // no body at all (a POST with no payload, a DELETE), and Fastify's default
+  // parser rejects it before any handler runs:
+  //
+  //   "Body cannot be empty when content-type is set to 'application/json'"
+  //
+  // which is a 400 on a route that legitimately takes no input — it broke
+  // POST /api/account/create-account-id and DELETE /api/auth/me. Fixed once
+  // here rather than per route, so every current and future no-body route
+  // benefits.
+  //
+  // Only a body of zero length is treated as absent. A malformed or non-empty
+  // body is still parsed and still fails normally, and a route that REQUIRES
+  // fields still 400s on the missing keys when its schema runs against `{}`.
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    if (typeof body !== "string" || body.trim().length === 0) return done(null, {});
+    try {
+      done(null, JSON.parse(body));
+    } catch {
+      // Malformed JSON is a client error and must stay one, rather than
+      // becoming a 500 from a throw inside the parser.
+      const err = new Error("Body is not valid JSON") as Error & { statusCode?: number };
+      err.statusCode = 400;
+      done(err, undefined);
+    }
+  });
+
+  // Start recording every route registration BEFORE any plugin is registered,
+  // so the OpenAPI document is built from the same table the server dispatches
+  // on rather than a list maintained alongside it.
+  startRouteCapture();
+  attachRouteCapture(app);
+
+  // Keep the raw body for signature-verified routes only. Everything else
+  // gets Fastify's normal JSON parsing.
+  const RAW_BODY_PATHS = new Set(["/api/ramp/webhook"]);
+  app.addHook("preParsing", async (request) => {
+    if (!RAW_BODY_PATHS.has(request.url.split("?")[0])) return;
+    const chunks: Buffer[] = [];
+    for await (const chunk of request.body as AsyncIterable<Buffer | string>) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    request.rawBody = Buffer.concat(chunks);
+  });
 
   // CORS is locked to an explicit origin allowlist: any origin not listed
   // gets a 403 from @fastify/cors. ALLOWED_ORIGINS is a comma-separated list
@@ -29,6 +138,13 @@ export async function buildApp(): Promise<FastifyInstance> {
   // required and must contain at least one https:// origin.
   await app.register(cors, {
     origin: parseAllowedOrigins(env.ALLOWED_ORIGINS),
+    // B4/C4: PATCH was added to the contacts API, and @fastify/cors answers a
+    // preflight with its DEFAULT method list unless one is given. The default
+    // does not include PATCH, so a browser preflight for a contact rename was
+    // rejected before the request left the page — the route would have existed
+    // and still have been unreachable from the app. Listed explicitly rather
+    // than left implicit so the next added verb cannot be forgotten here.
+    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
   });
 
   await app.register(helmet, {
@@ -40,12 +156,50 @@ export async function buildApp(): Promise<FastifyInstance> {
     timeWindow: "1 minute",
   });
 
-  await app.register(websocket);
-  await registerWebsocketHandlers(app);
-
-  app.get("/health", async () => {
-    return { status: "ok", timestamp: new Date().toISOString() };
+  // Misses are counted, because the global limiter above does not reach them.
+  // @fastify/rate-limit installs its `onRequest` hook from inside `onRoute`, so
+  // the hook exists only on routes that were registered. An unmatched path has
+  // no route, therefore no hook, therefore no counter — measured on the live
+  // server before this: 130 requests to a real endpoint gave 30 x 429, 130
+  // requests to unknown paths gave 0. The documented 100/min-per-IP guarantee
+  // did not apply to precisely the traffic an attacker would send, and each miss
+  // still wrote ~15 log lines, so one IP could grow the log without bound.
+  //
+  // A miss is never legitimate traffic, so this budget is deliberately tighter
+  // than the global one: 60/min leaves a client with a wrong path room to retry
+  // for a while before being told to stop, while capping a flood hard.
+  //
+  // Registered here rather than beside `setErrorHandler` because
+  // `createRateLimit` only exists once the plugin above is attached; calling it
+  // earlier throws `app.createRateLimit is not a function` at boot.
+  const notFoundLimiter = createIpRateLimit(app, { max: 60, timeWindow: "1 minute" });
+  app.setNotFoundHandler(async (request, reply) => {
+    // The limiter reports over-budget by throwing, as it does on every other
+    // route. Here it is caught rather than thrown onward, because routing a
+    // throw out of the not-found handler through Fastify's error path is not
+    // something to rely on — and because this way the 429 is built explicitly,
+    // in the same envelope, with no type-narrowing cast on the way.
+    const allowed = await notFoundLimiter
+      .preHandler(request, reply)
+      .then(() => true)
+      .catch(() => false);
+    if (!allowed) {
+      // `retry-after` was already set by the limiter before it threw.
+      return reply.code(429).send(errorResponse(RATE_LIMITED_MESSAGE));
+    }
+    return reply
+      .code(404)
+      .send(errorResponse(`Route ${request.method}:${request.url} not found`));
   });
+
+  await app.register(websocket);
+  registerWebsocketHandlers(app);
+  // Workers are a separate process (src/worker/index.ts); this bridge is what
+  // carries their user-scoped events to this process's sockets.
+  await startUserEventBridge();
+
+  registerHealthRoutes(app);
+  startQueueDepthLogger();
 
   await app.register(authRoutes, { prefix: "/api/auth" });
   await app.register(accountRoutes, { prefix: "/api/account" });
@@ -56,7 +210,65 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(validationRoutes, { prefix: "/api/validation" });
   await app.register(contactRoutes, { prefix: "/api/contact" });
 
+  // The OpenAPI document is built from the route table captured above, so it
+  // describes the routes this instance actually serves. Registered last so the
+  // inventory is complete.
+  if (shouldServeApiDocs()) {
+    registerApiDocs(app, capturedRoutes());
+  } else if (env.ENABLE_API_DOCS) {
+    // The flag is set but the docs are not being served. Say so explicitly:
+    // a silently-ignored flag is indistinguishable from a broken build, and an
+    // operator who expects /docs in production needs to know it is refused on
+    // purpose rather than missing.
+    app.log.warn(
+      { event: "api_docs_refused", nodeEnv: env.NODE_ENV },
+      "ENABLE_API_DOCS is set but /docs is not served in production; an unauthenticated route inventory is reconnaissance",
+    );
+  }
+
   return app;
+}
+
+/**
+ * Resolves Fastify's `trustProxy` setting from the environment.
+ *
+ * `request.ip` is the key every rate limiter in this app uses, and how Fastify
+ * computes it depends entirely on this option:
+ *
+ *  - `false` (the default): `request.ip` is the immediate TCP peer. Correct
+ *    when the app is directly reachable, and WRONG behind a reverse proxy —
+ *    every user then shares one budget per route, so one abusive client can
+ *    lock out everyone on `/login`, `/verify-pin` and friends.
+ *  - `true`: `request.ip` is the leftmost entry of `X-Forwarded-For`. Only
+ *    safe when a trusted proxy overwrites that header, since a directly
+ *    reachable client can otherwise forge it to evade its own limit.
+ *  - a number: trust exactly N hops.
+ *  - a string list (IPs / CIDRs): trust only those addresses as proxies.
+ *
+ * The string-list form is the recommended one because it fails safe: an
+ * unrecognised peer is simply not trusted.
+ */
+export function resolveTrustProxy(
+  trustedProxies: string | undefined,
+  trustedProxyCount: number | undefined,
+): boolean | string[] | ((address: string, hop: number) => boolean) {
+  // Defensive about a missing value: `config/env.ts` always supplies a default,
+  // but tests mock that module with a partial object, and a helper must not
+  // throw on an absent optional variable.
+  const list = (trustedProxies ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (list.includes("*")) return true;
+  if (list.length > 0) return list;
+  if (trustedProxyCount !== undefined && trustedProxyCount > 0) {
+    // Fastify's `trustProxy` has no numeric form in its type, so "trust exactly
+    // N hops" is expressed as the predicate it is equivalent to: a hop is
+    // trusted when it is at or nearer the socket than the Nth one.
+    return (_address: string, hop: number) => hop <= trustedProxyCount;
+  }
+  return false;
 }
 
 export function parseAllowedOrigins(raw: string): string[] {

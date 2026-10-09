@@ -77,7 +77,6 @@ model User {
   sessions                Session[]
   externalTransferIntents ExternalTransferIntent[]
 }
-
 model AccountId {
   id        String   @id @default(uuid())
   accountId String   @unique @db.VarChar(10)
@@ -179,6 +178,8 @@ model PaymentRequest {
   user                   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   asset                  String
   amount                 Decimal?             @db.Decimal(36, 18)
+  /// Free-text note shown to whoever pays the request. Optional, max 140 chars.
+  note                   String?
   status                 PaymentRequestStatus @default(OPEN)
   expiresAt              DateTime?
   createdAt              DateTime             @default(now())
@@ -197,11 +198,43 @@ model RampTransaction {
   provider  String
   reference String     @unique
   status    RampStatus @default(PENDING)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  // Provider-side correlation ids and the payment instructions handed to the
+  // user, so a webhook or a support agent can reconcile a transaction without
+  // re-querying the provider.
+  providerReference    String?
+  providerCustomerId   String?
+  paymentInstructions  Json?
+  failureReason        String?
+  providerAmountNgn    Decimal?   @db.Decimal(18, 2)
+  providerStatusRaw    String?
+  lastSyncedAt         DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 
   @@index([userId])
   @@index([reference])
+  @@index([status])
+}
+
+// One row per provider webhook delivery. The provider event id is unique, so
+// a redelivery (Bitnob retries up to 3 times) loses the insert race and is
+// acknowledged without being applied twice.
+model RampWebhookEvent {
+  id             String   @id @default(uuid())
+  provider       String
+  // Stable across retries for the same logical event.
+  eventId        String
+  eventType      String
+  reference      String?
+  signatureValid Boolean  @default(false)
+  status         String?
+  payload        Json
+  receivedAt     DateTime @default(now())
+  processedAt    DateTime?
+
+  @@unique([provider, eventId])
+  @@index([reference])
+  @@index([processedAt])
 }
 
 model Session {
