@@ -45,34 +45,47 @@ Rules that constrain the above:
 - **Never leave a copy of a credential-bearing file behind.** A backup of `.env` is itself a leak: a stray `*.env.bak` holding `RESEND_API_KEY` was created and then had to be hunted down and deleted. If you need to record a config change, write down the *variable name* and the fact that it changed — never copy the file.
 - If the gate cannot run (no database, no Redis), **say so in the commit message** rather than quietly skipping it. An unverified commit that says so is useful; one that implies verification it never got is not.
 
-## Two known gaps — found in review, deliberately NOT fixed
+## Two gaps found in review — both now fixed (`722d1bb`)
 
-Recorded so they are not rediscovered as if they were new, and not silently
-"fixed" without a decision.
+Kept as a record of what was wrong, because both were invisible from the code and
+only a measurement exposed them.
 
-**1. Requests to unrouted paths bypass the global rate limiter.** Measured:
-130 requests to `/api/account/me` from one IP produced 30 × `429`; 130 requests
-to unknown paths produced **0**. `app.register(rateLimit, { max: 100, timeWindow:
-"1 minute" })` is global, but the router's not-found path is never counted, so the
-documented 100/min-per-IP guarantee does not apply to exactly the traffic an
-attacker would send. Cost is not CPU — a 404 touches no database and no Redis —
-but each one writes ~15 log lines, so a single IP can grow the log without bound.
-**Pre-existing:** Fastify's default not-found handler ran at the identical point
-in the lifecycle, and `eb56084` touched no rate-limit code. A fix means counting
-misses in `setNotFoundHandler` or moving the limiter to a hook that sees them.
+**1. Requests to unrouted paths bypassed the global rate limiter. FIXED.**
+`@fastify/rate-limit` installs its `onRequest` hook from inside `onRoute`, so the
+hook exists **only on routes that were registered**. An unmatched path has no
+route, therefore no hook, therefore no counter. Measured: 130 requests to
+`/api/account/me` from one IP produced 30 × `429`; 130 to unknown paths produced
+**0**. The documented 100/min-per-IP ceiling did not apply to exactly the traffic
+an attacker would send, and each miss wrote ~15 log lines, so one IP could grow
+the log without bound. Pre-existing — `eb56084` touched no rate-limit code, and
+Fastify's default not-found handler ran at the same point in the lifecycle.
 
-**2. CI cannot catch a route added without an OpenAPI entry — this file used to
-claim it could, and that was wrong.** `verifySpecMatchesRoutes` runs only when
-the app boots in non-production (`openapiRoutes.ts`, `NODE_ENV !== "production"`).
-Every CI step is `npm ci`, `prisma generate`, `lint`, `typecheck`, `test`, the
-Redis checks and `migrate deploy`/`status` — **nothing ever boots the API.** And
-both test route lists are hand-maintained: `openapi.test.ts` carries 49 typed
-entries, while `openapiRoutes.test.ts` derives its list *from `ROUTE_DOCS` itself*
-and so compares the spec against itself and can never detect a missing entry.
-Net effect: add a route, forget the docs, CI is green and you find out the next
-time someone boots the app locally. The honest fix is to build the route list
-from the live app in `openapi.test.ts`, the way `attachRouteCapture` already
-does at boot.
+`setNotFoundHandler` now runs its own IP-keyed limiter at 60/min, verified live
+(90 misses → 60 × `404` then 30 × `429`, `retry-after: 59`, standard envelope). It
+is a **separate counter** from the global one so typos cannot throttle real
+traffic. Two things to know before touching it:
+- It **must** be registered after `await app.register(rateLimit, …)`.
+  `createRateLimit` only exists once the plugin is attached; creating it earlier
+  throws `app.createRateLimit is not a function` at boot.
+- The 429 is built explicitly rather than by throwing out of the not-found
+  handler, so it does not depend on Fastify routing that throw. The text comes
+  from `RATE_LIMITED_MESSAGE` so it cannot drift from the route limiters'.
+
+**2. CI could not catch a route added without an OpenAPI entry. FIXED.** This
+file previously claimed it could, and that claim was wrong. `verifySpecMatchesRoutes`
+runs only at a non-production boot, and no CI step boots the API — the workflow is
+`lint`, `typecheck`, `test`, the Redis checks and `migrate deploy`/`status`. Both
+test route lists were hand-maintained: `openapi.test.ts` carried 49 typed entries,
+and `openapiRoutes.test.ts` derives its list from `Object.keys(ROUTE_DOCS)` and
+then asserts `ROUTE_DOCS` against it — comparing the spec with itself, so it can
+never detect a missing entry.
+
+`app.routeDocsGuard.test.ts` now builds the **real** app with the same module
+mocks the other app-level tests use, captures the real route table the way
+`buildApp` does, and asserts `verifySpecMatchesRoutes` does not throw. Proven by
+deleting the `POST /api/auth/logout` doc entry and watching it fail with
+`OpenAPI drift: routes missing from the OpenAPI document: POST /api/auth/logout`.
+**When you add a route, this is what will fail** — that is the intended signal.
 
 ## Verification standard
 Every claim of "done" or "working" must be backed by actual test output, not assumption. Report exact test pass/fail counts, not just "tests pass." If you cannot verify something (e.g. no live server/DB in this environment), say so explicitly rather than describing untested code as verified.
