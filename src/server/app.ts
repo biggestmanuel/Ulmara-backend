@@ -19,6 +19,7 @@ import { paymentRoutes } from "../routes/payment.routes.js";
 import { rampRoutes } from "../routes/ramp.routes.js";
 import { contactRoutes } from "../routes/contact.routes.js";
 import { errorHandler } from "../middleware/error.middleware.js";
+import { createIpRateLimit, RATE_LIMITED_MESSAGE } from "../middleware/rateLimit.middleware.js";
 import { errorResponse } from "../utils/apiResponse.js";
 import { registerWebsocketHandlers } from "../websocket/socket.handler.js";
 import { startUserEventBridge } from "../websocket/emit.js";
@@ -80,11 +81,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   // The method is included because "wrong verb on a real path" is the case worth
   // naming: a client that should have POSTed learns the route exists and what it
   // takes, which is not sensitive (the route table is published at /docs/json).
-  app.setNotFoundHandler((request, reply) => {
-    return reply
-      .code(404)
-      .send(errorResponse(`Route ${request.method}:${request.url} not found`));
-  });
+  //
+  // (Registered below, after @fastify/rate-limit is attached — the miss limiter
+  // needs `createRateLimit`, which the plugin decorates onto the instance.)
 
   // B2: an empty body with `Content-Type: application/json` is accepted as no
   // body. axios sets that header on EVERY request, including the ones that send
@@ -155,6 +154,42 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(rateLimit, {
     max: 100,
     timeWindow: "1 minute",
+  });
+
+  // Misses are counted, because the global limiter above does not reach them.
+  // @fastify/rate-limit installs its `onRequest` hook from inside `onRoute`, so
+  // the hook exists only on routes that were registered. An unmatched path has
+  // no route, therefore no hook, therefore no counter — measured on the live
+  // server before this: 130 requests to a real endpoint gave 30 x 429, 130
+  // requests to unknown paths gave 0. The documented 100/min-per-IP guarantee
+  // did not apply to precisely the traffic an attacker would send, and each miss
+  // still wrote ~15 log lines, so one IP could grow the log without bound.
+  //
+  // A miss is never legitimate traffic, so this budget is deliberately tighter
+  // than the global one: 60/min leaves a client with a wrong path room to retry
+  // for a while before being told to stop, while capping a flood hard.
+  //
+  // Registered here rather than beside `setErrorHandler` because
+  // `createRateLimit` only exists once the plugin above is attached; calling it
+  // earlier throws `app.createRateLimit is not a function` at boot.
+  const notFoundLimiter = createIpRateLimit(app, { max: 60, timeWindow: "1 minute" });
+  app.setNotFoundHandler(async (request, reply) => {
+    // The limiter reports over-budget by throwing, as it does on every other
+    // route. Here it is caught rather than thrown onward, because routing a
+    // throw out of the not-found handler through Fastify's error path is not
+    // something to rely on — and because this way the 429 is built explicitly,
+    // in the same envelope, with no type-narrowing cast on the way.
+    const allowed = await notFoundLimiter
+      .preHandler(request, reply)
+      .then(() => true)
+      .catch(() => false);
+    if (!allowed) {
+      // `retry-after` was already set by the limiter before it threw.
+      return reply.code(429).send(errorResponse(RATE_LIMITED_MESSAGE));
+    }
+    return reply
+      .code(404)
+      .send(errorResponse(`Route ${request.method}:${request.url} not found`));
   });
 
   await app.register(websocket);

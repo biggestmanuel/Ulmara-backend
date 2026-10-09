@@ -142,3 +142,62 @@ describe("a router 404 uses the standard error envelope", () => {
     await app.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Misses are rate limited, because the global limiter cannot reach them.
+//
+// @fastify/rate-limit installs its `onRequest` hook from inside `onRoute`, so the
+// hook exists only on registered routes. An unmatched path has no route, so it had
+// no counter: measured on the live server before this, 130 requests to a real
+// endpoint produced 30 x 429 and 130 requests to unknown paths produced 0. The
+// documented per-IP ceiling did not apply to the traffic an attacker would send.
+// ---------------------------------------------------------------------------
+describe("unrouted paths are rate limited", () => {
+  beforeEach(() => {
+    envState.env.NODE_ENV = "test";
+    envState.env.ALLOWED_ORIGINS = `${ALLOWED},http://localhost:19006`;
+  });
+
+  it("throttles misses once the budget is spent, and answers 429 in the envelope", async () => {
+    const app = await buildApp();
+    const MISS_LIMIT = 60;
+
+    // Under the budget: every one is a real 404 with a real message.
+    for (let i = 0; i < MISS_LIMIT; i++) {
+      const res = await app.inject({ method: "GET", url: `/api/unrouted-${i}` });
+      expect(res.statusCode, `request ${i} should be a 404`).toBe(404);
+    }
+
+    // Over it: 429, in the same shape as every other error, with retry-after.
+    const throttled = await app.inject({ method: "GET", url: "/api/unrouted-over" });
+    expect(throttled.statusCode).toBe(429);
+    const body = throttled.json<{ success: boolean; message: string }>();
+    expect(body.success).toBe(false);
+    expect(body.message).toMatch(/too many requests/i);
+    expect(throttled.headers["retry-after"]).toBeDefined();
+
+    await app.close();
+  });
+
+  // The miss budget must be its own counter. If it shared the global store, a
+  // client that made a few typos would throttle its own real traffic.
+  it("miss-counting does not throttle a real route", async () => {
+    const app = await buildApp();
+    // Burn the whole miss budget on unrouted paths.
+    for (let i = 0; i < 60; i++) {
+      await app.inject({ method: "GET", url: `/api/typo-${i}` });
+    }
+    // A real route is still served normally.
+    const res = await app.inject({ method: "GET", url: "/api/account/me" });
+    expect(res.statusCode).toBe(401); // reached the route; only auth is missing
+    await app.close();
+  });
+
+  it("an ordinary typo still gets the helpful 404, not a 429", async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/acount/me" });
+    expect(res.statusCode).toBe(404);
+    expect(res.json<{ message: string }>().message).toContain("/api/acount/me");
+    await app.close();
+  });
+});
