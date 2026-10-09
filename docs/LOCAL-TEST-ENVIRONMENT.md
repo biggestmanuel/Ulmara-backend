@@ -46,6 +46,17 @@ actually has. It exits non-zero and prints the exact command to run.
 `EXPO_PUBLIC_*` values are **inlined into the bundle at build time**, so restart
 Expo after changing the `.env` or it keeps using the old value.
 
+### ⚠️ Fix the drift for good: reserve the address on the router
+
+Everything above is detection. The fix needs Manuel and the router, and it is one
+setting: **reserve this machine's address in the router's DHCP configuration,
+bound to the machine's MAC address.** Until that exists the address keeps moving,
+and every value written down by hand in the previous section goes stale again —
+which is what has happened repeatedly during development.
+
+Once the reservation is in place, run `npm run verify:net` again and use the
+address it prints. No other file needs editing by hand after that.
+
 ### ⚠️ A phone on the LAN still needs one Windows-side action
 
 **Proven cause, not a guess:** from WSL, `http://192.168.1.5:4100/health` returns
