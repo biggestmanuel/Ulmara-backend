@@ -318,6 +318,13 @@ export const ROUTE_DOCS: Record<string, RouteDoc> = {
     tags: ["transaction"],
     auth: true,
     body: { schema: transactionSendSchema, description: "Exactly one of recipientAccountId or recipientAddress. Note the field is `network`, not `chain`. idempotencyKey is required." },
+    description:
+      "Answers with the created row plus `direction` and `counterpartyAccountId`, the same two " +
+      "derived fields `GET /api/transaction` and `GET /api/transaction/{id}` return, so all three " +
+      "endpoints describe a transfer identically. `direction` is always \"sent\" here: the row is by " +
+      "definition outgoing from the caller. `counterpartyAccountId` is the recipient's Account ID " +
+      "for an internal transfer, or the resolved raw address for an external one. Replaying the " +
+      "same idempotencyKey returns the original row with this same shape.",
   },
   "POST /api/transaction/fee": {
     summary: "Estimate the network fee",

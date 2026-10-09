@@ -13,6 +13,47 @@ function normalizeAmount(value: string): string {
   return trimmed.includes(".") ? trimmed.replace(/0+$/, "").replace(/\.$/, "") : trimmed;
 }
 
+/**
+ * Decorate a row the create path just produced (fresh or replayed) with the same
+ * two derived fields `list` and `getById` already return.
+ *
+ * Found by a frontend contract audit: `POST /api/transaction/send` answered with
+ * the bare Prisma row, while `GET /api/transaction/:id` and
+ * `GET /api/transaction` both added `direction` and `counterpartyAccountId`. The
+ * client therefore needed a `?? 'sent'` fallback in `normalizeTransaction` — which
+ * happened to produce the right answer, because a row this endpoint returns is by
+ * definition outgoing from the caller. But it was right by luck rather than by
+ * contract, and the fallback is the kind of thing that keeps working after the
+ * thing it was compensating for stops being true.
+ *
+ * Both values are knowable with no extra query: the sender IS this caller, and
+ * the recipient was resolved before the row was written — an Account ID for an
+ * internal transfer, a raw address for an external one, exactly as `list` and
+ * `getById` choose.
+ *
+ * Applied to all five return points of the create path — fast-path replay,
+ * post-resolution replay, the in-transaction race fold, the create itself, and
+ * the unique-constraint catch — because they must not disagree. A replay of the
+ * same idempotency key has to answer with the same shape as the original create,
+ * or a retry would change the response contract under the caller.
+ *
+ * Module-level rather than a method on the service object: the service is an
+ * object literal, which cannot hold a generic or a `private` method, and this
+ * needs both to preserve the row's own type in the return.
+ */
+function describeCreated<T extends { recipientAccountId: string | null; recipientAddress: string | null }>(
+  row: T,
+): T & { direction: "sent"; counterpartyAccountId: string } {
+  return {
+    ...row,
+    direction: "sent" as const,
+    // Same precedence as list/getById: the Account ID when there is one, the raw
+    // address otherwise, and a visible placeholder rather than a falsy empty
+    // string if a row somehow has neither.
+    counterpartyAccountId: row.recipientAccountId ?? row.recipientAddress ?? "Unknown",
+  };
+}
+
 export const transactionService = {
   async estimateFee(input: { senderId: string; recipientAddress: string; asset: string; amount: string; network: ChainName }) {
     const senderWallet = await prisma.wallet.findUnique({
@@ -81,7 +122,7 @@ export const transactionService = {
     // below — the authoritative params check — so a client bug cannot masquerade
     // as a retry here.
     const fastPath = await this.findByIdempotencyKey(input.idempotencyKey, input.senderId);
-    if (fastPath && this.matchesIntent(fastPath, input)) return fastPath;
+    if (fastPath && this.matchesIntent(fastPath, input)) return describeCreated(fastPath);
 
     const recipientAccountId = input.recipientAccountId;
     let recipientAddress = input.recipientAddress;
@@ -110,7 +151,7 @@ export const transactionService = {
       if (!this.matchesIntent(reused, { ...input, recipientAddress })) {
         throw Object.assign(new Error("This idempotency key was already used for a different transfer"), { statusCode: 409 });
       }
-      return reused;
+      return describeCreated(reused);
     }
 
     // Interactive transaction: the duplicate re-check and the create are
@@ -120,7 +161,7 @@ export const transactionService = {
     try {
       return await prisma.$transaction(async (tx) => {
         const raced = await this.findByIdempotencyKey(input.idempotencyKey, input.senderId, tx);
-        if (raced) return raced;
+        if (raced) return describeCreated(raced);
 
         // SELECT ... FOR UPDATE on the sender's wallet row: two DISTINCT
         // legitimate transfers submitted in quick succession are serialized
@@ -128,18 +169,20 @@ export const transactionService = {
         // invalidated by a concurrent transfer from the same account.
         await tx.$queryRaw`SELECT id FROM "Wallet" WHERE "userId" = ${input.senderId} AND chain = ${input.network}::"Chain" FOR UPDATE`;
 
-        return tx.transaction.create({
-          data: {
-            senderId: input.senderId,
-            recipientAccountId,
-            recipientAddress,
-            asset: input.asset,
-            amount: input.amount,
-            network: input.network,
-            status: "PENDING",
-            idempotencyKey: input.idempotencyKey,
-          },
-        });
+        return describeCreated(
+          await tx.transaction.create({
+            data: {
+              senderId: input.senderId,
+              recipientAccountId,
+              recipientAddress,
+              asset: input.asset,
+              amount: input.amount,
+              network: input.network,
+              status: "PENDING",
+              idempotencyKey: input.idempotencyKey,
+            },
+          }),
+        );
       });
     } catch (err) {
       // Lost a unique-constraint race on the key against a request whose
@@ -152,7 +195,7 @@ export const transactionService = {
       if (!winner || !this.matchesIntent(winner, { ...input, recipientAddress })) {
         throw Object.assign(new Error("This idempotency key was already used for a different transfer"), { statusCode: 409 });
       }
-      return winner;
+      return describeCreated(winner);
     }
   },
 
