@@ -25,6 +25,55 @@ After coding:
 - If a task is ambiguous or conflicts with existing architecture, stop and ask rather than guessing
 - Test in a **release build** first — rule out dev-mode overhead.
 
+### Commit and push after every file change
+
+**Never leave a file change sitting uncommitted.** When a change is finished and
+verified, commit it and push it before moving on. Work that lives only in a
+working tree is work that is one `git checkout .` away from being lost, and it
+cannot be reviewed by anyone else.
+
+What "done" means for a change, in order:
+1. `npm run verify:all` green, and `npm run build` clean.
+2. **Code-review your own diff first.** Look for credentials, private keys, mnemonics and tokens; broken imports; dead code; a comment that contradicts the code around it; and anything the commit message claims that the diff does not actually do. Report what you found.
+3. Commit **one logical change per commit** — never bundle unrelated fixes.
+4. Push to the working branch.
+5. Confirm CI is green on the pushed commit.
+
+Rules that constrain the above:
+- **Never push to `main`.** `main` is the user's to merge, through PR #1. Push to `hardening-2026-09-30`.
+- **Never commit a secret.** `.env`, `.solana-e2e-keypair.json` and `.tls-test-certs/` are ignored and must stay that way; the live credentials live in `~/dev/ulmara-fe-backend.env`, outside the repository entirely.
+- **Never leave a copy of a credential-bearing file behind.** A backup of `.env` is itself a leak: a stray `*.env.bak` holding `RESEND_API_KEY` was created and then had to be hunted down and deleted. If you need to record a config change, write down the *variable name* and the fact that it changed — never copy the file.
+- If the gate cannot run (no database, no Redis), **say so in the commit message** rather than quietly skipping it. An unverified commit that says so is useful; one that implies verification it never got is not.
+
+## Two known gaps — found in review, deliberately NOT fixed
+
+Recorded so they are not rediscovered as if they were new, and not silently
+"fixed" without a decision.
+
+**1. Requests to unrouted paths bypass the global rate limiter.** Measured:
+130 requests to `/api/account/me` from one IP produced 30 × `429`; 130 requests
+to unknown paths produced **0**. `app.register(rateLimit, { max: 100, timeWindow:
+"1 minute" })` is global, but the router's not-found path is never counted, so the
+documented 100/min-per-IP guarantee does not apply to exactly the traffic an
+attacker would send. Cost is not CPU — a 404 touches no database and no Redis —
+but each one writes ~15 log lines, so a single IP can grow the log without bound.
+**Pre-existing:** Fastify's default not-found handler ran at the identical point
+in the lifecycle, and `eb56084` touched no rate-limit code. A fix means counting
+misses in `setNotFoundHandler` or moving the limiter to a hook that sees them.
+
+**2. CI cannot catch a route added without an OpenAPI entry — this file used to
+claim it could, and that was wrong.** `verifySpecMatchesRoutes` runs only when
+the app boots in non-production (`openapiRoutes.ts`, `NODE_ENV !== "production"`).
+Every CI step is `npm ci`, `prisma generate`, `lint`, `typecheck`, `test`, the
+Redis checks and `migrate deploy`/`status` — **nothing ever boots the API.** And
+both test route lists are hand-maintained: `openapi.test.ts` carries 49 typed
+entries, while `openapiRoutes.test.ts` derives its list *from `ROUTE_DOCS` itself*
+and so compares the spec against itself and can never detect a missing entry.
+Net effect: add a route, forget the docs, CI is green and you find out the next
+time someone boots the app locally. The honest fix is to build the route list
+from the live app in `openapi.test.ts`, the way `attachRouteCapture` already
+does at boot.
+
 ## Verification standard
 Every claim of "done" or "working" must be backed by actual test output, not assumption. Report exact test pass/fail counts, not just "tests pass." If you cannot verify something (e.g. no live server/DB in this environment), say so explicitly rather than describing untested code as verified.
 
