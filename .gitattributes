@@ -1,0 +1,9 @@
+# Line endings
+#
+# Every blob in this repository is LF. Without this file, a machine with a
+# global core.autocrlf=true checks the tree out as CRLF, and a shell script
+# with a CRLF shebang then fails to run with "bad interpreter".
+#
+# `text=auto` lets git detect binaries itself; `eol=lf` pins the working copy
+# to LF on every platform, so scripts stay executable after a fresh clone.
+* text=auto eol=lf
